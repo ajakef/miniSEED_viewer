@@ -1,32 +1,16 @@
 #include "app.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstdio>
-#include <thread>
 
 #include "imgui.h"
 #include "implot.h"
+#include "parallel.h"
 
 namespace msv {
 
 namespace {
-
-// Runs f(0) ... f(n-1), spread over the machine's processor cores.
-template <class F>
-void parallel_for(int n, F f) {
-    if (n <= 0) return;
-    unsigned nt = std::min<unsigned>((unsigned)n, std::max(1u, std::thread::hardware_concurrency()));
-    std::atomic<int> next(0);
-    auto work = [&] {
-        for (int k; (k = next++) < n;) f(k);
-    };
-    std::vector<std::thread> pool;
-    for (unsigned i = 1; i < nt; i++) pool.emplace_back(work);
-    work();
-    for (auto& t : pool) t.join();
-}
 
 // Extra height the bottom plot needs for its time/frequency labels.
 }  // namespace
@@ -43,6 +27,7 @@ const char* kDetrendNames[] = {"none", "remove mean", "remove linear trend"};
 App::App(const std::vector<std::string>& files) {
     load_config(cfg);
     load_filters(filters_);
+    load_calib(calib_);
     proc_.detrend = cfg.detrend;
     proc_.reverse = cfg.reverse_polarity;
     mag_.overlay = cfg.overlay_magnify;
@@ -83,6 +68,7 @@ void App::save_all() {
     cfg.spec_normalize = spec_.normalize;
     save_config(cfg);
     save_filters(filters_);
+    save_calib(calib_);
 }
 
 void App::add_files(const std::vector<std::string>& files) {
@@ -90,6 +76,7 @@ void App::add_files(const std::vector<std::string>& files) {
     n_files_ += (int)files.size();
     ::msv::add_files(traces_, files, messages_);
     topts_.resize(traces_.size());
+    calib_sel_.assign(traces_.size(), 0);
     rebuild_order();
     reset_views();
     clear_caches();
@@ -107,7 +94,6 @@ void App::reset_views() {
     main_lim_[1] = hi;
     sel_state_ = 0;
     have_win_ = false;
-    win_stack_.clear();
     pick_state_ = 0;
 }
 
@@ -167,6 +153,22 @@ std::vector<int> App::page_traces(bool only_on) const {
 
 const ProcOpts& App::opts_for(int ti) const { return topts_[ti].custom ? topts_[ti].o : proc_; }
 
+const Calib& App::calib_for(int ti) const {
+    static const Calib none;
+    auto it = calib_.find(traces_[ti].id);
+    return it == calib_.end() ? none : it->second;
+}
+
+std::string App::units_of(const std::vector<int>& rows) const {
+    std::string u;
+    for (int ti : rows) {
+        const std::string& x = calib_for(ti).units;
+        if (u.empty()) u = x;
+        else if (u != x) return "mixed units";
+    }
+    return u.empty() ? "counts" : u;
+}
+
 bool App::busy() const {
     // Spectra wait 0.15 s after the view stops moving, then appear; keep redrawing until then.
     return have_win_ && ImGui::GetTime() - view_changed_ < 0.4;
@@ -180,8 +182,8 @@ bool App::view_stable() const { return ImGui::GetTime() - view_changed_ > 0.15; 
 std::string App::proc_key(int ti, bool wf) const {
     const ProcOpts& o = opts_for(ti);
     char buf[256];
-    std::snprintf(buf, sizeof buf, "%d|%.6f|%.6f|%d|%d|%d|", ti, off(ti) + win_[0], off(ti) + win_[1], o.detrend,
-                  (int)o.reverse, (int)wf);
+    std::snprintf(buf, sizeof buf, "%d|%.6f|%.6f|%d|%d|%d|%.9g|", ti, off(ti) + win_[0], off(ti) + win_[1], o.detrend,
+                  (int)o.reverse, (int)wf, calib_for(ti).scale);
     std::string k = buf;
     if (wf && o.filter >= 0 && o.filter < (int)filters_.size()) {
         const FilterSpec& f = filters_[o.filter];
@@ -206,6 +208,9 @@ std::shared_ptr<const Processed> App::compute_processed(int ti, bool wf) const {
     }
     for (const Segment& raw : extract(tr, off(ti) + win_[0], off(ti) + win_[1])) {
         std::vector<double> v = raw.doubles();
+        const double scale = calib_for(ti).scale;
+        if (scale != 1.0)
+            for (double& d : v) d *= scale;
         detrend(v, (Detrend)o.detrend);
         if (f) apply_filter(*f, 1.0 / raw.dt, v);
         if (o.reverse)
@@ -368,6 +373,7 @@ void App::frame() {
         last_view_[1] = view_[1];
         view_changed_ = ImGui::GetTime();
     }
+    grow_window_if_needed();
     draw_top_bar();
     if (show_config_) {
         draw_config();
@@ -395,7 +401,11 @@ void App::frame() {
             draw_spectra("##spec", ImGui::GetContentRegionAvail().y, spec_);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Split", nullptr, flag(3))) {
+        if (ImGui::BeginTabItem("Spectrogram", nullptr, flag(3))) {
+            draw_specgram("##sg", ImGui::GetContentRegionAvail().y, sg_);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Split", nullptr, flag(4))) {
             draw_split();
             ImGui::EndTabItem();
         }
@@ -439,15 +449,29 @@ void App::need_window_message() {
         double lo, hi;
         data_range(lo, hi);
         apply_window(lo, hi);
-        win_stack_.clear();
     }
 }
 
+// Sets the magnify view. The processed window gets some margin around it, so that
+// filter start-up effects stay out of sight and small pans need no recalculation.
 void App::apply_window(double a, double b) {
-    win_[0] = view_[0] = a;
-    win_[1] = view_[1] = b;
+    view_[0] = a;
+    view_[1] = b;
+    double lo, hi;
+    data_range(lo, hi);
+    double span = b - a;
+    win_[0] = std::min(a, std::max(lo, a - 0.5 * span));
+    win_[1] = std::max(b, std::min(hi, b + 0.5 * span));
     have_win_ = true;
     pick_state_ = 0;
+}
+
+// When the view has moved outside the processed window (zoomed or panned out),
+// process the new region once the view has stopped moving.
+void App::grow_window_if_needed() {
+    if (!have_win_ || !view_stable()) return;
+    if (view_[0] >= win_[0] - 1e-9 && view_[1] <= win_[1] + 1e-9) return;
+    apply_window(view_[0], view_[1]);
 }
 
 // ---------------------------------------------------------------------------
@@ -524,10 +548,12 @@ void App::draw_main() {
     ImGui::BeginDisabled(sel_state_ != 2);
     if (ImGui::Button("Magnify selection  >")) {
         apply_window(sel_[0], sel_[1]);
-        win_stack_.clear();
         goto_tab_ = 1;
     }
     ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Calibration...")) ImGui::OpenPopup("Calibration");
+    calib_editor();
     ImGui::SameLine(0, 30);
     if (sel_state_ == 0)
         ImGui::TextUnformatted("Click on a plot to set t1, click again to set t2.");
@@ -574,11 +600,11 @@ void App::draw_main() {
         double lo = 0, hi = 1;
     };
     std::vector<Row> data(rows.size());
-    double glo = 1e300, ghi = -1e300;
+    std::map<std::string, std::pair<double, double>> common;  // shared range for each kind of units
     for (size_t r = 0; r < rows.size(); r++) {
         const Trace& tr = traces_[rows[r]];
-        if (!tr.on) continue;
-        double o = off(rows[r]);
+        const double o = off(rows[r]);
+        const double scale = calib_for(rows[r]).scale;  // physical units per count
         Row& d = data[r];
         double vlo = 1e300, vhi = -1e300;
         for (const Segment& seg : tr.segs) {
@@ -586,6 +612,7 @@ void App::draw_main() {
             seg.envelope(o + main_lim_[0], o + main_lim_[1], nbins, ser);
             if (ser.x.empty()) continue;
             for (size_t i = 0; i < ser.x.size(); i++) {
+                ser.y[i] *= scale;
                 vlo = std::min(vlo, ser.y[i]);
                 vhi = std::max(vhi, ser.y[i]);
                 ser.x[i] -= o;
@@ -596,21 +623,28 @@ void App::draw_main() {
             d.lo = vlo;
             d.hi = vhi;
         } else {
-            d.lo = tr.v_min;
-            d.hi = tr.v_max;
+            d.lo = std::min(tr.v_min * scale, tr.v_max * scale);
+            d.hi = std::max(tr.v_min * scale, tr.v_max * scale);
         }
-        glo = std::min(glo, d.lo);
-        ghi = std::max(ghi, d.hi);
+        if (tr.on) {  // traces that are switched off do not take part in the common scale
+            auto it = common.emplace(calib_for(rows[r]).units, std::make_pair(1e300, -1e300)).first;
+            it->second.first = std::min(it->second.first, d.lo);
+            it->second.second = std::max(it->second.second, d.hi);
+        }
     }
-    for (Row& d : data) {
-        if (cfg.main_global_norm && glo <= ghi) {
-            d.lo = glo;
-            d.hi = ghi;
+    for (size_t r = 0; r < rows.size(); r++) {
+        Row& d = data[r];
+        if (cfg.main_global_norm && traces_[rows[r]].on) {
+            const auto& c = common[calib_for(rows[r]).units];
+            d.lo = c.first;
+            d.hi = c.second;
         }
         double span = d.hi - d.lo;
-        if (span <= 0) {
-            d.lo -= 1;
-            d.hi += 1;
+        double big = std::max(std::fabs(d.lo), std::fabs(d.hi));
+        if (span <= 1e-12 * big || big == 0) {  // flat trace: give it some room
+            double m = big > 0 ? big : 1.0;
+            d.lo -= m;
+            d.hi += m;
         } else {
             d.lo -= 0.05 * span;
             d.hi += 0.05 * span;
@@ -625,9 +659,10 @@ void App::draw_main() {
     for (size_t r = 0; r < rows.size(); r++) {
         int ti = rows[r];
         const Trace& tr = traces_[ti];
+        const std::string& units = calib_for(ti).units;
         ImGui::PushID(ti);
         ImGui::BeginChild("lbl", ImVec2(label_w, row_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
-        trace_label(ti, true, false, nullptr);
+        trace_label(ti, true, false, units == "counts" ? nullptr : units.c_str());
         ImGui::EndChild();
         ImGui::SameLine(0, 0);
         const bool last = (r + 1 == rows.size());
@@ -635,16 +670,17 @@ void App::draw_main() {
                               ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect |
                                   ImPlotFlags_NoFrame)) {
             ImPlot::SetupAxis(ImAxis_X1, nullptr,
-                              ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoInitialFit |
+                              ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoInitialFit | ImPlotAxisFlags_NoHighlight |
                                   (last ? 0 : ImPlotAxisFlags_NoTickLabels));
             ImPlot::SetupAxis(ImAxis_Y1, nullptr,
                               ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoGridLines |
-                                  ImPlotAxisFlags_Lock);
+                                  ImPlotAxisFlags_NoHighlight | ImPlotAxisFlags_Lock);
             ImPlot::SetupAxisScale(ImAxis_X1, cfg.relative_time ? ImPlotScale_Linear : ImPlotScale_Time);
             ImPlot::SetupAxisLinks(ImAxis_X1, &main_lim_[0], &main_lim_[1]);
             ImPlot::SetupAxisLimits(ImAxis_Y1, data[r].lo, data[r].hi, ImPlotCond_Always);
             ImPlotSpec spec;
             spec.LineColor = ImPlot::GetColormapColor(ti);
+            if (!tr.on) spec.LineColor.w = 0.3f;  // switched-off traces stay visible, but faded
             spec.Flags = ImPlotItemFlags_NoLegend;
             for (const Series& s : data[r].s) ImPlot::PlotLine("##l", s.x.data(), s.y.data(), (int)s.x.size(), spec);
 
@@ -661,7 +697,7 @@ void App::draw_main() {
                 ImPlot::GetPlotDrawList()->AddRectFilled(p0, p1, IM_COL32(255, 90, 90, 40));
                 ImPlot::PopPlotClipRect();
             }
-            if (tr.on && ImPlot::IsPlotHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+            if (ImPlot::IsPlotHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
                 ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
                 if (d.x == 0 && d.y == 0) {
                     clicked = true;

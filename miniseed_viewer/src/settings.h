@@ -1,5 +1,6 @@
 // Options that are remembered between runs, and the list of saved filters.
 #pragma once
+#include <map>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,15 @@ std::string config_dir();
 
 void load_config(Config& c);
 void save_config(const Config& c);
+
+// Physical units per count for one channel, and the name of those units.
+struct Calib {
+    double scale = 1.0;
+    std::string units = "counts";
+};
+// Calibrations are kept by channel code (NET.STA.LOC.CHA).
+void load_calib(std::map<std::string, Calib>& calib);
+void save_calib(const std::map<std::string, Calib>& calib);
 
 void load_filters(std::vector<FilterSpec>& filters);
 void save_filters(const std::vector<FilterSpec>& filters);

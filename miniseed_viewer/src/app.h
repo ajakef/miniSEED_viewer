@@ -22,7 +22,7 @@ struct ProcOpts {
     bool reverse = false;
 };
 
-// A trace after detrending/filtering, limited to the chosen time window.
+// A trace after calibration/detrending/filtering, limited to the processed window.
 struct Processed {
     std::vector<Segment> segs;
     std::string warning;
@@ -34,8 +34,25 @@ struct SpecResult {
     double pmax = 0;
 };
 
+// A computed spectrogram: power in dB on a regular grid, plus the picture made from it.
+struct SgData {
+    int w = 0, h = 0;           // columns (time) and rows (frequency, lowest first)
+    std::vector<float> db;      // h * w values, NaN where there is no data
+    double t0 = 0, t1 = 1;      // display time of the left and right edge
+    double f0 = 0, f1 = 1;      // frequency at the bottom and top edge
+    double p_lo = 0, p_hi = 0;  // typical low and high power (for automatic colours)
+    unsigned tex = 0;           // OpenGL texture holding the picture (0 = none yet)
+    std::string tex_sig;        // colours the picture was made with
+    SgData() = default;
+    SgData(const SgData&) = delete;
+    SgData& operator=(const SgData&) = delete;
+    ~SgData();
+};
+
 struct MagState {
     bool overlay = false;
+    bool global_scale = false;  // scale all traces together instead of each on its own
+    bool fit_visible = true;    // scale to what is on screen, not the whole processed window
 };
 
 struct SpecState {
@@ -49,6 +66,22 @@ struct SpecState {
     double lim[4] = {0, 0, 0, 0};  // x min, x max, y min, y max; 0 = automatic
     // bookkeeping for the shared frequency axis
     double xv[2] = {0.1, 100};
+    double last_desired[2] = {0, 0};
+    std::string last_sig;
+};
+
+struct SgState {
+    int nwin = 1024;
+    int overlap_pct = 50;
+    bool log_f = true;
+    bool same_filter = true;
+    bool filtered = true;
+    int cmap = 0;                // index into the list of colour maps
+    bool auto_db = true;
+    double db[2] = {-100, -20};  // colour range when not automatic
+    double flim[2] = {0, 0};     // frequency limits, 0 = automatic
+    // bookkeeping for the shared frequency axis
+    double yv[2] = {0.1, 100};
     double last_desired[2] = {0, 0};
     std::string last_sig;
 };
@@ -80,17 +113,23 @@ private:
     };
     std::vector<TraceOpts> topts_;
     int edit_filter_ = 0;
-    FilterSpec draft_;       // filter being edited in the filter window
-    int draft_src_ = -2;     // which saved filter draft_ was copied from
+    FilterSpec draft_;    // filter being edited in the filter window
+    int draft_src_ = -2;  // which saved filter draft_ was copied from
+
+    // calibration (bitweight) by channel code
+    std::map<std::string, Calib> calib_;
+    std::vector<char> calib_sel_;  // per trace: ticked in the calibration window
+    char calib_match_[64] = "";
+    double calib_set_scale_ = 1.0;
+    char calib_set_units_[32] = "Pa";
 
     // selections, in display time (clock seconds, or seconds since the trace started)
     double main_lim_[2] = {0, 1};
     double sel_[2] = {0, 0};
     int sel_state_ = 0;  // 0 nothing, 1 first point set, 2 both set
     bool have_win_ = false;
-    double win_[2] = {0, 0};   // the stretch of time being processed
     double view_[2] = {0, 0};  // what the magnify axes currently show
-    std::vector<std::array<double, 2>> win_stack_;
+    double win_[2] = {0, 0};   // the stretch of time that has been processed (always covers view_)
     int pick_state_ = 0;
     double pick_first_ = 0;
     double last_view_[2] = {0, 0};
@@ -98,10 +137,13 @@ private:
 
     MagState mag_, split_mag_;
     SpecState spec_, split_spec_;
+    SgState sg_;
 
     std::map<std::string, std::shared_ptr<const Processed>> proc_cache_;
     std::map<std::string, std::shared_ptr<const SpecResult>> spec_cache_;
     std::map<std::string, std::shared_ptr<const SpecResult>> spec_stale_;
+    std::map<std::string, std::shared_ptr<SgData>> sg_cache_;
+    std::map<std::string, std::shared_ptr<SgData>> sg_stale_;
     std::map<std::string, double> rms_cache_;
 
     void rebuild_order();
@@ -113,6 +155,8 @@ private:
     int n_pages() const;
     std::vector<int> page_traces(bool only_on) const;
     const ProcOpts& opts_for(int ti) const;
+    const Calib& calib_for(int ti) const;
+    std::string units_of(const std::vector<int>& rows) const;
     bool view_stable() const;
 
     // ---- processing (app.cpp)
@@ -123,17 +167,23 @@ private:
     double rms_for(int ti, bool with_filter);
     std::vector<std::shared_ptr<const SpecResult>> spectra_for(const std::vector<int>& rows, bool with_filter,
                                                                const SpecState& ss, const char* panel);
+    std::vector<std::shared_ptr<SgData>> specgrams_for(const std::vector<int>& rows, bool with_filter,
+                                                       const SgState& sg);
 
-    // ---- drawing (app.cpp: top, main, config; app_views.cpp: the rest)
+    // ---- drawing (app.cpp: top, main, config; app_views.cpp: magnify, spectra, split, pop-up windows;
+    //      app_specgram.cpp: spectrogram)
     void draw_top_bar();
     void draw_main();
     void draw_config();
     void draw_magnify(const char* id, float height, MagState& ms);
     void draw_spectra(const char* id, float height, SpecState& ss);
+    void draw_specgram(const char* id, float height, SgState& sg);
     void draw_split();
     void magnify_toolbar(MagState& ms);
     void spectra_toolbar(SpecState& ss);
+    void specgram_toolbar(SgState& sg);
     void filter_editor();
+    void calib_editor();
     void combo_filter(const char* label, int& idx);
     void combo_detrend(const char* label, int& d);
     void trace_label(int ti, bool checkbox, bool settings_button, const char* line2);
@@ -141,6 +191,7 @@ private:
     void main_click(double x);
     void mag_click(double x);
     void apply_window(double a, double b);
+    void grow_window_if_needed();
 };
 
 }  // namespace msv

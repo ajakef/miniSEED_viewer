@@ -10,15 +10,16 @@ Files can also be dropped onto the window.
 
 | Tab | What it does |
 |---|---|
-| Main | Raw traces. Click once to set t1, click again to set t2, then press "Magnify selection". Turn traces on/off with the check boxes. |
-| Magnify | Selected window, with filtering, detrending and polarity reversal (for all traces, or per trace with each trace's "settings" button). RMS of what is on screen is shown under each name. Click twice on a plot to zoom to a new window ("Back" undoes it). |
+| Main | Raw traces. Click once to set t1, click again to set t2, then press "Magnify selection". Unchecked traces are faded and left out of the other tabs. "Calibration..." sets a bitweight (physical units per count) and unit name per channel; every tab then shows physical units. |
+| Magnify | Filtering, detrending and polarity reversal (for all traces, or per trace with each trace's "settings" button). Scale each trace separately or all traces with the same units together. RMS of what is on screen is shown under each name. Zoom with the wheel or click twice on a plot; zooming out always shows all the data in the new interval. |
 | Spectra | Power spectral density of the traces in the Magnify tab's current view. One spectrum for the whole view, or Welch average. |
+| Spectrogram | Power (dB) versus time and frequency for each selected trace over the Magnify view. Window length (default 1024 samples), overlap, log/linear frequency, color map and range are adjustable. |
 | Split | Spectra above, magnify below; spectra follow the magnify zoom. |
 
 Mouse: left click = pick time, right drag = pan, wheel = zoom time.
 "Settings" (top right) holds traces per screen, channel sort order, time axis
 (clock time or seconds since start of trace), default detrend, spectra defaults.
-Settings and saved filters are kept in `~/.config/miniseed_viewer/`
+Settings, saved filters and calibrations are kept in `~/.config/miniseed_viewer/`
 (`%APPDATA%\miniseed_viewer` on Windows, `~/Library/Application Support/miniseed_viewer` on Mac).
 
 Notes on what the numbers mean:

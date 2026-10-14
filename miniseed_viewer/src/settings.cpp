@@ -194,6 +194,41 @@ void load_filters(std::vector<FilterSpec>& filters) {
 }
 
 // ---------------------------------------------------------------------------
+// Calibration file: one channel per line, "id|scale|units".
+
+void save_calib(const std::map<std::string, Calib>& calib) {
+    std::ofstream f(config_dir() + "/calibration.txt");
+    if (!f) return;
+    f.precision(12);
+    for (const auto& kv : calib) {
+        if (kv.second.scale == 1.0 && kv.second.units == "counts") continue;  // nothing to remember
+        std::string units = kv.second.units;
+        std::replace(units.begin(), units.end(), '|', '/');
+        f << kv.first << "|" << kv.second.scale << "|" << units << "\n";
+    }
+}
+
+void load_calib(std::map<std::string, Calib>& calib) {
+    calib.clear();
+    std::ifstream f(config_dir() + "/calibration.txt");
+    std::string line;
+    while (std::getline(f, line)) {
+        std::vector<std::string> parts;
+        std::stringstream ss(line);
+        std::string p;
+        while (std::getline(ss, p, '|')) parts.push_back(p);
+        if (parts.size() < 2) continue;
+        try {
+            Calib c;
+            c.scale = std::stod(parts[1]);
+            c.units = parts.size() > 2 && !parts[2].empty() ? parts[2] : "counts";
+            if (c.scale != 0) calib[parts[0]] = c;
+        } catch (...) {
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 
 std::vector<int> sort_order(const std::vector<Trace>& traces, const std::vector<SortItem>& order) {
     auto base = [](const std::string& p) {

@@ -94,6 +94,92 @@ void App::filter_editor() {
 }
 
 // ---------------------------------------------------------------------------
+// Calibration window
+
+void App::calib_editor() {
+    if (!ImGui::BeginPopupModal("Calibration", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+    const float fh = ImGui::GetFontSize();
+    calib_sel_.resize(traces_.size(), 0);
+    ImGui::PushTextWrapPos(fh * 42);
+    ImGui::TextWrapped(
+        "Bitweight is the number of physical units per count (for example 2.5e-6 for Pa per count). Once set, the "
+        "Main, Magnify, Spectra and Spectrogram tabs show physical units. Values are remembered by channel code.");
+    ImGui::PopTextWrapPos();
+    ImGui::Spacing();
+    ImGui::SetNextItemWidth(fh * 8);
+    ImGui::InputText("##match", calib_match_, sizeof calib_match_);
+    ImGui::SameLine();
+    if (ImGui::Button("Tick channels containing this text"))
+        for (size_t i = 0; i < traces_.size(); i++)
+            calib_sel_[i] = *calib_match_ && traces_[i].id.find(calib_match_) != std::string::npos;
+    ImGui::SameLine();
+    if (ImGui::Button("Tick all")) std::fill(calib_sel_.begin(), calib_sel_.end(), 1);
+    ImGui::SameLine();
+    if (ImGui::Button("Tick none")) std::fill(calib_sel_.begin(), calib_sel_.end(), 0);
+
+    ImGui::SetNextItemWidth(fh * 9);
+    ImGui::InputDouble("bitweight##set", &calib_set_scale_, 0, 0, "%.6g");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(fh * 6);
+    ImGui::InputText("units##set", calib_set_units_, sizeof calib_set_units_);
+    ImGui::SameLine();
+    if (ImGui::Button("Apply to ticked channels") && calib_set_scale_ != 0) {
+        for (size_t i = 0; i < traces_.size(); i++)
+            if (calib_sel_[i]) {
+                Calib c;
+                c.scale = calib_set_scale_;
+                c.units = *calib_set_units_ ? calib_set_units_ : "counts";
+                calib_[traces_[i].id] = c;
+            }
+    }
+    ImGui::Spacing();
+    if (ImGui::BeginTable("calib", 4, ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders,
+                          ImVec2(fh * 42, fh * 14))) {
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, fh * 2);
+        ImGui::TableSetupColumn("channel", ImGuiTableColumnFlags_WidthFixed, fh * 12);
+        ImGui::TableSetupColumn("bitweight", ImGuiTableColumnFlags_WidthFixed, fh * 14);
+        ImGui::TableSetupColumn("units", ImGuiTableColumnFlags_WidthFixed, fh * 8);
+        ImGui::TableHeadersRow();
+        for (int k = 0; k < (int)order_.size(); k++) {
+            int ti = order_[k];
+            ImGui::PushID(ti);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            bool tick = calib_sel_[ti] != 0;
+            if (ImGui::Checkbox("##t", &tick)) calib_sel_[ti] = tick;
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(traces_[ti].id.c_str());
+            Calib c = calib_for(ti);
+            bool commit = false;
+            ImGui::TableNextColumn();
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputDouble("##bw", &c.scale, 0, 0, "%.6g");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::TableNextColumn();
+            char u[32];
+            std::snprintf(u, sizeof u, "%s", c.units.c_str());
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputText("##u", u, sizeof u)) c.units = u;
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            if (commit && c.scale != 0) {
+                if (c.units.empty()) c.units = "counts";
+                calib_[traces_[ti].id] = c;
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (ImGui::Button("Set all back to counts")) calib_.clear();
+    ImGui::SameLine();
+    if (ImGui::Button("Close")) {
+        save_calib(calib_);
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+// ---------------------------------------------------------------------------
 // Magnify
 
 void App::mag_click(double x) {
@@ -105,8 +191,8 @@ void App::mag_click(double x) {
     pick_state_ = 0;
     double a = std::min(pick_first_, x), b = std::max(pick_first_, x);
     if (b - a < 1e-6) return;
-    win_stack_.push_back({win_[0], win_[1]});
-    apply_window(a, b);
+    view_[0] = a;  // the processed window follows by itself (see grow_window_if_needed)
+    view_[1] = b;
 }
 
 void App::magnify_toolbar(MagState& ms) {
@@ -125,24 +211,19 @@ void App::magnify_toolbar(MagState& ms) {
     ImGui::SameLine();
     ImGui::Checkbox("Reverse polarity", &proc_.reverse);
 
-    ImGui::BeginDisabled(win_stack_.empty());
-    if (ImGui::Button("Back")) {
-        auto w = win_stack_.back();
-        win_stack_.pop_back();
-        apply_window(w[0], w[1]);
-    }
-    ImGui::EndDisabled();
+    ImGui::TextUnformatted("Scale:");
     ImGui::SameLine();
-    if (ImGui::Button("Reset zoom")) {
-        view_[0] = win_[0];
-        view_[1] = win_[1];
-    }
+    if (ImGui::RadioButton("each trace", !ms.global_scale)) ms.global_scale = false;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("all traces together", ms.global_scale)) ms.global_scale = true;
+    ImGui::SameLine();
+    ImGui::Checkbox("fit to the part on screen", &ms.fit_visible);
     ImGui::SameLine(0, 20);
     if (pick_state_ == 1)
         ImGui::Text("New t1 = %s. Click again to set t2 and zoom.", fmt_disp(pick_first_).c_str());
     else
-        ImGui::Text("Window %s to %s (%.3f s). Click twice on a plot to zoom to a new window.",
-                    fmt_disp(win_[0]).c_str(), fmt_disp(win_[1]).c_str(), win_[1] - win_[0]);
+        ImGui::Text("Showing %s to %s (%.3f s). Click twice on a plot to zoom to a new window.",
+                    fmt_disp(view_[0]).c_str(), fmt_disp(view_[1]).c_str(), view_[1] - view_[0]);
     ImGui::PopID();
 }
 
@@ -168,9 +249,10 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
     const int N = ms.overlay ? 1 : (int)rows.size();
     const float row_h = std::max(30.0f, std::floor((avail_h - axis_label_height()) / N));
 
-    // Points to draw for each row.
+    // Points to draw, and the vertical range, for each row.
     std::vector<std::vector<Series>> data(rows.size());
     std::vector<std::string> notes(rows.size());
+    std::vector<double> ylo(rows.size(), 1e300), yhi(rows.size(), -1e300);
     for (size_t r = 0; r < rows.size(); r++) {
         auto P = proc_for(rows[r], true);
         if (!P) continue;
@@ -178,23 +260,71 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
         for (const Segment& seg : P->segs) {
             Series ser;
             seg.envelope(o + view_[0], o + view_[1], nbins, ser);
-            if (ser.x.empty()) continue;
-            for (double& x : ser.x) x -= o;
-            data[r].push_back(std::move(ser));
+            if (!ser.x.empty()) {
+                for (size_t i = 0; i < ser.x.size(); i++) {
+                    if (ms.fit_visible) {
+                        ylo[r] = std::min(ylo[r], ser.y[i]);
+                        yhi[r] = std::max(yhi[r], ser.y[i]);
+                    }
+                    ser.x[i] -= o;
+                }
+                data[r].push_back(std::move(ser));
+            }
+            if (!ms.fit_visible && seg.size() > 0) {
+                double mn, mx;
+                seg.minmax(0, seg.size(), mn, mx);
+                ylo[r] = std::min(ylo[r], mn);
+                yhi[r] = std::max(yhi[r], mx);
+            }
         }
         double rms = rms_for(rows[r], true);
-        char buf[96];
+        const std::string& u = calib_for(rows[r]).units;
+        char buf[128];
         if (std::isnan(rms))
             std::snprintf(buf, sizeof buf, "no data in view");
         else
-            std::snprintf(buf, sizeof buf, "RMS %.4g", rms);
+            std::snprintf(buf, sizeof buf, "RMS %.4g %s", rms, u == "counts" ? "" : u.c_str());
         notes[r] = buf;
         if (!P->warning.empty()) notes[r] += "\n" + P->warning;
     }
+    if (ms.global_scale && !ms.overlay) {
+        // Traces share a scale only when they have the same units.
+        std::map<std::string, std::pair<double, double>> common;
+        for (size_t r = 0; r < rows.size(); r++) {
+            auto it = common.emplace(calib_for(rows[r]).units, std::make_pair(1e300, -1e300)).first;
+            it->second.first = std::min(it->second.first, ylo[r]);
+            it->second.second = std::max(it->second.second, yhi[r]);
+        }
+        for (size_t r = 0; r < rows.size(); r++) {
+            const auto& c = common[calib_for(rows[r]).units];
+            ylo[r] = c.first;
+            yhi[r] = c.second;
+        }
+    }
+    for (size_t r = 0; r < rows.size(); r++) {
+        if (ylo[r] > yhi[r]) {
+            ylo[r] = -1;
+            yhi[r] = 1;
+        }
+        double span = yhi[r] - ylo[r];
+        double big = std::max(std::fabs(ylo[r]), std::fabs(yhi[r]));
+        if (span <= 1e-12 * big || big == 0) {  // flat trace: give it some room
+            double m = big > 0 ? big : 1.0;
+            ylo[r] -= m;
+            yhi[r] += m;
+        } else {
+            ylo[r] -= 0.05 * span;
+            yhi[r] += 0.05 * span;
+        }
+    }
+
+    double dlo, dhi;
+    data_range(dlo, dhi);
+    const double dspan = dhi - dlo;
 
     bool clicked = false;
     double click_x = 0;
-    auto mark_and_click = [&](bool hovered_ok) {
+    auto mark_and_click = [&]() {
         if (pick_state_ == 1) {
             ImPlotSpec mark;
             mark.LineColor = ImVec4(1.0f, 0.35f, 0.35f, 1);
@@ -202,7 +332,7 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
             mark.Flags = ImPlotItemFlags_NoLegend;
             ImPlot::PlotInfLines("##pick", &pick_first_, 1, mark);
         }
-        if (hovered_ok && ImPlot::IsPlotHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        if (ImPlot::IsPlotHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
             ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
             if (d.x == 0 && d.y == 0) {
                 clicked = true;
@@ -212,6 +342,14 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
     };
     const ImPlotFlags pflags =
         ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
+    auto setup_x = [&](bool last_row) {
+        ImPlot::SetupAxis(ImAxis_X1, nullptr,
+                          ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoInitialFit | ImPlotAxisFlags_NoHighlight |
+                              (last_row ? 0 : ImPlotAxisFlags_NoTickLabels));
+        ImPlot::SetupAxisScale(ImAxis_X1, cfg.relative_time ? ImPlotScale_Linear : ImPlotScale_Time);
+        ImPlot::SetupAxisLinks(ImAxis_X1, &view_[0], &view_[1]);
+        ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, dlo - dspan, dhi + dspan);  // do not get lost
+    };
 
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
     if (ms.overlay) {
@@ -224,11 +362,10 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
         }
         ImGui::EndChild();
         ImGui::SameLine(0, 0);
+        const std::string units = units_of(rows);
         if (ImPlot::BeginPlot("##overlay", ImVec2(-1, row_h + axis_label_height()), pflags)) {
-            ImPlot::SetupAxis(ImAxis_X1, nullptr, ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoInitialFit);
-            ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_AutoFit);
-            ImPlot::SetupAxisScale(ImAxis_X1, cfg.relative_time ? ImPlotScale_Linear : ImPlotScale_Time);
-            ImPlot::SetupAxisLinks(ImAxis_X1, &view_[0], &view_[1]);
+            setup_x(true);
+            ImPlot::SetupAxis(ImAxis_Y1, units.c_str(), ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_NoHighlight);
             for (size_t r = 0; r < rows.size(); r++) {
                 ImPlotSpec spec;
                 spec.LineColor = ImPlot::GetColormapColor(rows[r]);
@@ -236,7 +373,7 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
                 for (const Series& s : data[r])
                     ImPlot::PlotLine("##l", s.x.data(), s.y.data(), (int)s.x.size(), spec);
             }
-            mark_and_click(true);
+            mark_and_click();
             ImPlot::EndPlot();
         }
     } else {
@@ -249,19 +386,17 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
             ImGui::EndChild();
             ImGui::SameLine(0, 0);
             const bool last = (r + 1 == rows.size());
-            if (ImPlot::BeginPlot("##p", ImVec2(-1, (r + 1 == rows.size()) ? row_h + axis_label_height() : row_h), pflags)) {
-                ImPlot::SetupAxis(ImAxis_X1, nullptr,
-                                  ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoInitialFit |
-                                      (last ? 0 : ImPlotAxisFlags_NoTickLabels));
-                ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_AutoFit);
-                ImPlot::SetupAxisScale(ImAxis_X1, cfg.relative_time ? ImPlotScale_Linear : ImPlotScale_Time);
-                ImPlot::SetupAxisLinks(ImAxis_X1, &view_[0], &view_[1]);
+            const std::string units = calib_for(ti).units;
+            if (ImPlot::BeginPlot("##p", ImVec2(-1, last ? row_h + axis_label_height() : row_h), pflags)) {
+                setup_x(last);
+                ImPlot::SetupAxis(ImAxis_Y1, units.c_str(), ImPlotAxisFlags_NoHighlight | ImPlotAxisFlags_Lock);
+                ImPlot::SetupAxisLimits(ImAxis_Y1, ylo[r], yhi[r], ImPlotCond_Always);
                 ImPlotSpec spec;
                 spec.LineColor = ImPlot::GetColormapColor(ti);
                 spec.Flags = ImPlotItemFlags_NoLegend;
                 for (const Series& s : data[r])
                     ImPlot::PlotLine("##l", s.x.data(), s.y.data(), (int)s.x.size(), spec);
-                mark_and_click(true);
+                mark_and_click();
                 ImPlot::EndPlot();
             }
             ImGui::PopID();
@@ -295,7 +430,7 @@ void App::spectra_toolbar(SpecState& ss) {
     if (ss.welch) {
         ImGui::SameLine();
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
-        ImGui::InputInt("window (samples)", &ss.nwin, 0, 0);
+        ImGui::InputInt("window (samples, then Enter)", &ss.nwin, 0, 0, ImGuiInputTextFlags_EnterReturnsTrue);
         ss.nwin = std::max(16, ss.nwin);
     }
     ImGui::SameLine(0, 20);
@@ -364,15 +499,22 @@ void App::draw_spectra(const char* id, float height, SpecState& ss) {
     const bool user_y = ss.lim[2] > 0 && ss.lim[3] > ss.lim[2];
     const ImPlotFlags pflags = ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
 
-    auto setup_axes = [&](bool last_row) {
+    auto setup_axes = [&](bool last_row, const std::string& ylabel) {
         ImPlot::SetupAxis(ImAxis_X1, nullptr,
-                          ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoInitialFit |
+                          ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoInitialFit | ImPlotAxisFlags_NoHighlight |
                               (last_row ? 0 : ImPlotAxisFlags_NoTickLabels));
-        ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_NoLabel | (user_y ? 0 : ImPlotAxisFlags_AutoFit));
+        ImPlot::SetupAxis(ImAxis_Y1, ylabel.c_str(),
+                          ImPlotAxisFlags_NoHighlight | (user_y ? 0 : ImPlotAxisFlags_AutoFit));
         ImPlot::SetupAxisScale(ImAxis_X1, ss.log_x ? ImPlotScale_Log10 : ImPlotScale_Linear);
         ImPlot::SetupAxisScale(ImAxis_Y1, ss.log_y ? ImPlotScale_Log10 : ImPlotScale_Linear);
         ImPlot::SetupAxisLinks(ImAxis_X1, &ss.xv[0], &ss.xv[1]);
         if (user_y) ImPlot::SetupAxisLimits(ImAxis_Y1, ss.lim[2], ss.lim[3], ImPlotCond_Always);
+    };
+    // Power axis label: units squared per Hz (or "relative power" when normalized).
+    auto spec_label = [&](const std::vector<int>& rs) {
+        if (ss.normalize) return std::string("relative power");
+        std::string u = units_of(rs);
+        return u == "mixed units" ? u : u + "\xc2\xb2/Hz";
     };
     auto draw_one = [&](int ti, const SpecResult& r) {
         ImPlotSpec spec;
@@ -398,7 +540,7 @@ void App::draw_spectra(const char* id, float height, SpecState& ss) {
         ImGui::EndChild();
         ImGui::SameLine(0, 0);
         if (ImPlot::BeginPlot("##overlay", ImVec2(-1, row_h + axis_label_height()), pflags)) {
-            setup_axes(true);
+            setup_axes(true, spec_label(rows));
             for (size_t r = 0; r < rows.size(); r++)
                 if (sp[r] && !sp[r]->pts.x.empty()) draw_one(rows[r], *sp[r]);
             ImPlot::EndPlot();
@@ -413,7 +555,7 @@ void App::draw_spectra(const char* id, float height, SpecState& ss) {
             ImGui::EndChild();
             ImGui::SameLine(0, 0);
             if (ImPlot::BeginPlot("##p", ImVec2(-1, (r + 1 == rows.size()) ? row_h + axis_label_height() : row_h), pflags)) {
-                setup_axes(r + 1 == rows.size());
+                setup_axes(r + 1 == rows.size(), spec_label({ti}));
                 if (sp[r] && !sp[r]->pts.x.empty()) draw_one(ti, *sp[r]);
                 ImPlot::EndPlot();
             }

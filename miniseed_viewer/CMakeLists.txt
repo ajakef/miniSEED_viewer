@@ -46,7 +46,7 @@ target_include_directories(imgui PUBLIC ${TP}/imgui ${TP}/implot)
 target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
 target_compile_options(imgui PRIVATE -w)
 
-add_executable(miniseed_viewer src/main.cpp src/app.cpp src/app_views.cpp)
+add_executable(miniseed_viewer src/main.cpp src/app.cpp src/app_views.cpp src/app_specgram.cpp)
 target_link_libraries(miniseed_viewer core imgui Threads::Threads)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_options(miniseed_viewer PRIVATE -static-libstdc++ -static-libgcc)

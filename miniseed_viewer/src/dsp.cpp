@@ -197,6 +197,11 @@ void detrend(std::vector<double>& x, Detrend d) {
     mean /= (double)n;
     if (d == Detrend::Mean || n < 2) {
         for (double& v : x) v -= mean;
+        // Second pass removes the rounding error of the first, so constant data become exactly zero.
+        double resid = 0;
+        for (double v : x) resid += v;
+        resid /= (double)n;
+        for (double& v : x) v -= resid;
         return;
     }
     // Least-squares line, with the index centred for accuracy.
