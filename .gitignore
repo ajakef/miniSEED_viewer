@@ -5,3 +5,5 @@
 sample_miniSEED/
 miniseed_viewer/dist/
 miniseed_viewer/build-release/
+# personal notes (plain text files in the top folder)
+/*.txt
