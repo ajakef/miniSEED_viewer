@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "data.h"
+#include "imgui.h"
 #include "dsp.h"
 #include "settings.h"
 
@@ -130,6 +131,8 @@ private:
     bool have_win_ = false;
     double view_[2] = {0, 0};  // what the magnify axes currently show
     double win_[2] = {0, 0};   // the stretch of time that has been processed (always covers view_)
+    double applied_sel_[2] = {0, 0};  // the Main selection that the magnify view was last set from
+    bool sel_applied_ = false;
     int pick_state_ = 0;
     double pick_first_ = 0;
     double last_view_[2] = {0, 0};
@@ -191,6 +194,10 @@ private:
     void main_click(double x);
     void mag_click(double x);
     void apply_window(double a, double b);
+    void apply_main_selection();
+    ImVec4 trace_color(int ti) const;
+    ImVec4 mark_color() const;
+    bool combo_pow2(const char* label, int& v, int lo, int hi);
     void grow_window_if_needed();
 };
 

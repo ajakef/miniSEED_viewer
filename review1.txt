@@ -4,6 +4,14 @@
 Bugs:
 
 Magnify bugs:
---when I zoom in, data 
+--when I click t1 and t2, then zoom out, it doesn't show any data <t1 or >t2. correct behavior is, for each zoom-out, to show all the data in the new plot interval.
+--with that behavior implemented, "back" and "reset zoom" should not be needed anymore.
+--what's with the y-axis highlighting when I mouse over it? Before starting anything, tell me if this is intentional and what the purpose is.
 
-Main: don't make traces disappear when unchecked?
+Main bugs:
+--don't make traces disappear when unchecked; use some other indicator in addition to the checkbox (like highlighting selected traces or fading unselected traces.
+
+Feature requests:
+--allow scaling choices in magnify just like on Main
+--in Main, let user enter bitweight for each trace (or sets of traces) so subsequent plots are in physical units
+--Add a new tab for spectrograms for each selected trace with the current limits

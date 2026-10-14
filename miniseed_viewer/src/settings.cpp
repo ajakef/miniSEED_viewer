@@ -24,7 +24,27 @@ const char* sort_key_name(SortKey k) {
     return "";
 }
 
+std::vector<uint32_t> default_colors() {
+    return {0xE69F00,   // orange
+            0x56B4E9,   // sky blue
+            0x009E73,   // bluish green
+            0xF0E442,   // yellow
+            0x3A8FD6,   // blue (lighter than the original for a dark background)
+            0xD55E00,   // vermillion
+            0xCC79A7,   // reddish purple
+            0xD9D9D9,   // light grey
+            0xFFFFFF};  // t1/t2 marks
+}
+
+int snap_pow2(int n) {
+    int best = 16;
+    for (int p = 16; p <= (1 << 20); p *= 2)
+        if (std::abs(p - n) < std::abs(best - n)) best = p;
+    return best;
+}
+
 Config::Config() {
+    colors = default_colors();
     // Default: files in the order given, then channel names as they were found.
     sort = {{SortKey::CommandLine, true, false}, {SortKey::FileName, false, false},
             {SortKey::StartTime, false, false},  {SortKey::Network, false, false},
@@ -76,6 +96,13 @@ void save_config(const Config& c) {
       << "split_overlay_magnify = " << c.split_overlay_magnify << "\n"
       << "split_overlay_spectra = " << c.split_overlay_spectra << "\n"
       << "ui_scale = " << c.ui_scale << "\n";
+    f << "colors =";
+    for (uint32_t col : c.colors) {
+        char hex[16];
+        std::snprintf(hex, sizeof hex, " %06X", (unsigned)col);
+        f << hex;
+    }
+    f << "\n";
     // key number, used (0/1), descending (0/1), most important first
     f << "sort =";
     for (const SortItem& s : c.sort) f << " " << (int)s.key << "," << s.use << "," << s.descending;
@@ -102,7 +129,7 @@ void load_config(Config& c) {
             else if (k == "detrend") c.detrend = std::max(0, std::min(2, std::stoi(v)));
             else if (k == "reverse_polarity") c.reverse_polarity = b();
             else if (k == "welch") c.welch = b();
-            else if (k == "welch_window") c.welch_window = std::max(16, std::stoi(v));
+            else if (k == "welch_window") c.welch_window = snap_pow2(std::stoi(v));
             else if (k == "spec_log_x") c.spec_log_x = b();
             else if (k == "spec_log_y") c.spec_log_y = b();
             else if (k == "spec_normalize") c.spec_normalize = b();
@@ -111,7 +138,13 @@ void load_config(Config& c) {
             else if (k == "split_overlay_magnify") c.split_overlay_magnify = b();
             else if (k == "split_overlay_spectra") c.split_overlay_spectra = b();
             else if (k == "ui_scale") c.ui_scale = std::max(0.5f, std::min(4.0f, std::stof(v)));
-            else if (k == "sort") {
+            else if (k == "colors") {
+                std::vector<uint32_t> cols;
+                std::istringstream ss(v);
+                std::string tok;
+                while (ss >> tok) cols.push_back((uint32_t)std::stoul(tok, nullptr, 16) & 0xFFFFFF);
+                if ((int)cols.size() == kNumTraceColors + 1) c.colors = cols;
+            } else if (k == "sort") {
                 std::vector<SortItem> items;
                 std::istringstream ss(v);
                 std::string tok;

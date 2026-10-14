@@ -270,9 +270,7 @@ std::vector<std::shared_ptr<SgData>> App::specgrams_for(const std::vector<int>& 
 void App::specgram_toolbar(SgState& sg) {
     ImGui::PushID(&sg);
     const float fh = ImGui::GetFontSize();
-    ImGui::SetNextItemWidth(fh * 7);
-    ImGui::InputInt("window (samples, then Enter)", &sg.nwin, 0, 0, ImGuiInputTextFlags_EnterReturnsTrue);
-    sg.nwin = std::max(32, std::min(16384, sg.nwin));
+    combo_pow2("window (samples)", sg.nwin, 64, 16384);
     ImGui::SameLine(0, 20);
     ImGui::SetNextItemWidth(fh * 5);
     ImGui::InputInt("overlap % (then Enter)", &sg.overlap_pct, 0, 0, ImGuiInputTextFlags_EnterReturnsTrue);
@@ -404,11 +402,12 @@ void App::draw_specgram(const char* id, float height, SgState& sg) {
             ImPlot::SetupAxis(ImAxis_X1, nullptr,
                               ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoInitialFit | ImPlotAxisFlags_NoHighlight |
                                   (last ? 0 : ImPlotAxisFlags_NoTickLabels));
-            ImPlot::SetupAxis(ImAxis_Y1, "Hz", ImPlotAxisFlags_NoHighlight);
+            // The frequency axis stays put: only the time axis zooms and pans.
+            ImPlot::SetupAxis(ImAxis_Y1, "Hz", ImPlotAxisFlags_NoHighlight | ImPlotAxisFlags_Lock);
+            ImPlot::SetupAxisLimits(ImAxis_Y1, sg.yv[0], sg.yv[1], ImPlotCond_Always);
             ImPlot::SetupAxisScale(ImAxis_X1, cfg.relative_time ? ImPlotScale_Linear : ImPlotScale_Time);
             ImPlot::SetupAxisScale(ImAxis_Y1, sg.log_f ? ImPlotScale_Log10 : ImPlotScale_Linear);
             ImPlot::SetupAxisLinks(ImAxis_X1, &view_[0], &view_[1]);
-            ImPlot::SetupAxisLinks(ImAxis_Y1, &sg.yv[0], &sg.yv[1]);
             ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, dlo - dspan, dhi + dspan);
             if (res[r] && res[r]->w > 0 && res[r]->tex)
                 ImPlot::PlotImage("##img", (ImTextureID)(intptr_t)res[r]->tex, ImPlotPoint(res[r]->t0, res[r]->f0),

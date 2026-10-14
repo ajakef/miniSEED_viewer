@@ -1,5 +1,6 @@
 // Options that are remembered between runs, and the list of saved filters.
 #pragma once
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
@@ -12,6 +13,14 @@ namespace msv {
 enum class SortKey { CommandLine = 0, FileName, StartTime, Network, Station, Location, Channel };
 const int kNumSortKeys = 7;
 const char* sort_key_name(SortKey k);
+
+// Colors that are easy to tell apart with the common kinds of color blindness (Okabe-Ito set,
+// with the blue lightened and black replaced by light grey for the dark background).
+std::vector<uint32_t> default_colors();
+const int kNumTraceColors = 8;
+
+// Nearest power of two to n (at least 16).
+int snap_pow2(int n);
 
 struct SortItem {
     SortKey key;
@@ -33,6 +42,8 @@ struct Config {
     bool overlay_magnify = false, overlay_spectra = false;
     bool split_overlay_magnify = false, split_overlay_spectra = false;
     float ui_scale = 1.0f;
+    // 0xRRGGBB: eight trace colors (cycled by channel), then the color of the t1/t2 marks
+    std::vector<uint32_t> colors;
     std::vector<SortItem> sort;        // most important first
     Config();
 };

@@ -327,7 +327,7 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
     auto mark_and_click = [&]() {
         if (pick_state_ == 1) {
             ImPlotSpec mark;
-            mark.LineColor = ImVec4(1.0f, 0.35f, 0.35f, 1);
+            mark.LineColor = mark_color();
             mark.LineWeight = 1.5f;
             mark.Flags = ImPlotItemFlags_NoLegend;
             ImPlot::PlotInfLines("##pick", &pick_first_, 1, mark);
@@ -368,7 +368,7 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
             ImPlot::SetupAxis(ImAxis_Y1, units.c_str(), ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_NoHighlight);
             for (size_t r = 0; r < rows.size(); r++) {
                 ImPlotSpec spec;
-                spec.LineColor = ImPlot::GetColormapColor(rows[r]);
+                spec.LineColor = trace_color(rows[r]);
                 spec.Flags = ImPlotItemFlags_NoLegend;
                 for (const Series& s : data[r])
                     ImPlot::PlotLine("##l", s.x.data(), s.y.data(), (int)s.x.size(), spec);
@@ -392,7 +392,7 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
                 ImPlot::SetupAxis(ImAxis_Y1, units.c_str(), ImPlotAxisFlags_NoHighlight | ImPlotAxisFlags_Lock);
                 ImPlot::SetupAxisLimits(ImAxis_Y1, ylo[r], yhi[r], ImPlotCond_Always);
                 ImPlotSpec spec;
-                spec.LineColor = ImPlot::GetColormapColor(ti);
+                spec.LineColor = trace_color(ti);
                 spec.Flags = ImPlotItemFlags_NoLegend;
                 for (const Series& s : data[r])
                     ImPlot::PlotLine("##l", s.x.data(), s.y.data(), (int)s.x.size(), spec);
@@ -429,9 +429,7 @@ void App::spectra_toolbar(SpecState& ss) {
     ImGui::Checkbox("Welch average", &ss.welch);
     if (ss.welch) {
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
-        ImGui::InputInt("window (samples, then Enter)", &ss.nwin, 0, 0, ImGuiInputTextFlags_EnterReturnsTrue);
-        ss.nwin = std::max(16, ss.nwin);
+        combo_pow2("window (samples)", ss.nwin, 64, 65536);
     }
     ImGui::SameLine(0, 20);
     ImGui::TextUnformatted("Axis limits (0 = automatic):");
@@ -518,7 +516,7 @@ void App::draw_spectra(const char* id, float height, SpecState& ss) {
     };
     auto draw_one = [&](int ti, const SpecResult& r) {
         ImPlotSpec spec;
-        spec.LineColor = ImPlot::GetColormapColor(ti);
+        spec.LineColor = trace_color(ti);
         spec.Flags = ImPlotItemFlags_NoLegend;
         if (ss.normalize && r.pmax > 0) {
             std::vector<double> y(r.pts.y.size());

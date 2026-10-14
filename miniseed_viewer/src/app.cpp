@@ -95,6 +95,7 @@ void App::reset_views() {
     sel_state_ = 0;
     have_win_ = false;
     pick_state_ = 0;
+    sel_applied_ = false;
 }
 
 void App::clear_caches() {
@@ -152,6 +153,32 @@ std::vector<int> App::page_traces(bool only_on) const {
 }
 
 const ProcOpts& App::opts_for(int ti) const { return topts_[ti].custom ? topts_[ti].o : proc_; }
+
+ImVec4 App::trace_color(int ti) const {
+    uint32_t c = cfg.colors[(size_t)ti % kNumTraceColors];
+    return ImVec4(((c >> 16) & 255) / 255.0f, ((c >> 8) & 255) / 255.0f, (c & 255) / 255.0f, 1.0f);
+}
+
+ImVec4 App::mark_color() const {
+    uint32_t c = cfg.colors[kNumTraceColors];
+    return ImVec4(((c >> 16) & 255) / 255.0f, ((c >> 8) & 255) / 255.0f, (c & 255) / 255.0f, 1.0f);
+}
+
+// A list of powers of two to pick from (so that a stray click cannot make it 1025).
+bool App::combo_pow2(const char* label, int& v, int lo, int hi) {
+    bool changed = false;
+    v = std::max(lo, std::min(hi, snap_pow2(v)));
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6);
+    if (ImGui::BeginCombo(label, std::to_string(v).c_str())) {
+        for (int p = lo; p <= hi; p *= 2)
+            if (ImGui::Selectable(std::to_string(p).c_str(), p == v)) {
+                v = p;
+                changed = true;
+            }
+        ImGui::EndCombo();
+    }
+    return changed;
+}
 
 const Calib& App::calib_for(int ti) const {
     static const Calib none;
@@ -394,18 +421,22 @@ void App::frame() {
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Magnify", nullptr, flag(1))) {
+            apply_main_selection();
             draw_magnify("##mag", ImGui::GetContentRegionAvail().y, mag_);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Spectra", nullptr, flag(2))) {
+            apply_main_selection();
             draw_spectra("##spec", ImGui::GetContentRegionAvail().y, spec_);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Spectrogram", nullptr, flag(3))) {
+            apply_main_selection();
             draw_specgram("##sg", ImGui::GetContentRegionAvail().y, sg_);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Split", nullptr, flag(4))) {
+            apply_main_selection();
             draw_split();
             ImGui::EndTabItem();
         }
@@ -443,8 +474,8 @@ void App::draw_top_bar() {
 void App::need_window_message() {
     ImGui::Spacing();
     ImGui::TextWrapped(
-        "No time window chosen yet. On the Main tab, click once on a plot to set t1 and again to set t2, then press "
-        "\"Magnify selection\".");
+        "No time window chosen yet. On the Main tab, click once on a plot to set t1 and again to set t2; then this tab "
+        "will show that window.");
     if (ImGui::Button("Use the full time range")) {
         double lo, hi;
         data_range(lo, hi);
@@ -464,6 +495,17 @@ void App::apply_window(double a, double b) {
     win_[1] = std::max(b, std::min(hi, b + 0.5 * span));
     have_win_ = true;
     pick_state_ = 0;
+}
+
+// Called when a tab that needs a time window is shown: if the selection made on the Main tab is new,
+// the magnify view is set to it (so Magnify, Spectra, Spectrogram and Split all follow Main).
+void App::apply_main_selection() {
+    if (sel_state_ != 2) return;
+    if (sel_applied_ && sel_[0] == applied_sel_[0] && sel_[1] == applied_sel_[1]) return;
+    apply_window(sel_[0], sel_[1]);
+    applied_sel_[0] = sel_[0];
+    applied_sel_[1] = sel_[1];
+    sel_applied_ = true;
 }
 
 // When the view has moved outside the processed window (zoomed or panned out),
@@ -495,7 +537,7 @@ void App::combo_detrend(const char* label, int& d) {
 
 void App::trace_label(int ti, bool checkbox, bool settings_button, const char* line2) {
     Trace& tr = traces_[ti];
-    ImVec4 col = ImPlot::GetColormapColor(ti);
+    ImVec4 col = trace_color(ti);
     if (!tr.on) col = ImVec4(0.5f, 0.5f, 0.5f, 1);
     if (checkbox) {
         ImGui::Checkbox("##on", &tr.on);
@@ -545,23 +587,16 @@ void App::draw_main() {
     ImGui::SameLine();
     if (ImGui::Button("Clear selection")) sel_state_ = 0;
     ImGui::SameLine();
-    ImGui::BeginDisabled(sel_state_ != 2);
-    if (ImGui::Button("Magnify selection  >")) {
-        apply_window(sel_[0], sel_[1]);
-        goto_tab_ = 1;
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
     if (ImGui::Button("Calibration...")) ImGui::OpenPopup("Calibration");
     calib_editor();
     ImGui::SameLine(0, 30);
     if (sel_state_ == 0)
-        ImGui::TextUnformatted("Click on a plot to set t1, click again to set t2.");
+        ImGui::TextUnformatted("Click on a plot to set t1, click again to set t2. Then open any other tab.");
     else if (sel_state_ == 1)
         ImGui::Text("t1 = %s   (click again to set t2)", fmt_disp(sel_[0]).c_str());
     else
-        ImGui::Text("t1 = %s    t2 = %s    (%.3f s)", fmt_disp(sel_[0]).c_str(), fmt_disp(sel_[1]).c_str(),
-                    sel_[1] - sel_[0]);
+        ImGui::Text("t1 = %s    t2 = %s    (%.3f s)   Open the Magnify, Spectra, Spectrogram or Split tab to see it.",
+                    fmt_disp(sel_[0]).c_str(), fmt_disp(sel_[1]).c_str(), sel_[1] - sel_[0]);
 
     ImGui::TextUnformatted("Scale:");
     ImGui::SameLine();
@@ -679,13 +714,13 @@ void App::draw_main() {
             ImPlot::SetupAxisLinks(ImAxis_X1, &main_lim_[0], &main_lim_[1]);
             ImPlot::SetupAxisLimits(ImAxis_Y1, data[r].lo, data[r].hi, ImPlotCond_Always);
             ImPlotSpec spec;
-            spec.LineColor = ImPlot::GetColormapColor(ti);
+            spec.LineColor = trace_color(ti);
             if (!tr.on) spec.LineColor.w = 0.3f;  // switched-off traces stay visible, but faded
             spec.Flags = ImPlotItemFlags_NoLegend;
             for (const Series& s : data[r].s) ImPlot::PlotLine("##l", s.x.data(), s.y.data(), (int)s.x.size(), spec);
 
             ImPlotSpec mark;
-            mark.LineColor = ImVec4(1.0f, 0.35f, 0.35f, 1);
+            mark.LineColor = mark_color();
             mark.LineWeight = 1.5f;
             mark.Flags = ImPlotItemFlags_NoLegend;
             if (sel_state_ >= 1) ImPlot::PlotInfLines("##t1", &sel_[0], 1, mark);
@@ -694,7 +729,9 @@ void App::draw_main() {
                 ImPlotRect lim = ImPlot::GetPlotLimits();
                 ImVec2 p0 = ImPlot::PlotToPixels(sel_[0], lim.Y.Max), p1 = ImPlot::PlotToPixels(sel_[1], lim.Y.Min);
                 ImPlot::PushPlotClipRect();
-                ImPlot::GetPlotDrawList()->AddRectFilled(p0, p1, IM_COL32(255, 90, 90, 40));
+                ImVec4 mc = mark_color();
+                mc.w = 0.16f;
+                ImPlot::GetPlotDrawList()->AddRectFilled(p0, p1, ImGui::ColorConvertFloat4ToU32(mc));
                 ImPlot::PopPlotClipRect();
             }
             if (ImPlot::IsPlotHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
@@ -741,13 +778,31 @@ void App::draw_config() {
     combo_detrend("Detrend", proc_.detrend);
     ImGui::Checkbox("Reverse polarity", &proc_.reverse);
     ImGui::Checkbox("Spectra: Welch average (instead of one spectrum)", &spec_.welch);
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
-    ImGui::InputInt("Spectra: Welch window (samples)", &spec_.nwin);
-    spec_.nwin = std::max(16, spec_.nwin);
+    combo_pow2("Spectra: Welch window (samples)", spec_.nwin, 64, 65536);
     ImGui::Checkbox("Spectra: log frequency axis", &spec_.log_x);
     ImGui::Checkbox("Spectra: log power axis", &spec_.log_y);
     ImGui::Checkbox("Spectra: normalize", &spec_.normalize);
     ImGui::TextDisabled("(Changes here apply to the Spectra tab now and to the Split tab next time the program starts.)");
+
+    ImGui::SeparatorText("Colors");
+    ImGui::TextWrapped(
+        "Trace colors are used in turn for the channels. The defaults are chosen to be easy to tell apart with the "
+        "common kinds of color blindness. Click a swatch to change it.");
+    {
+        std::vector<uint32_t> defaults = default_colors();
+        for (int i = 0; i <= kNumTraceColors; i++) {
+            uint32_t& c = cfg.colors[i];
+            float rgb[3] = {((c >> 16) & 255) / 255.0f, ((c >> 8) & 255) / 255.0f, (c & 255) / 255.0f};
+            ImGui::PushID(i);
+            if (ImGui::ColorEdit3(i < kNumTraceColors ? ("Trace " + std::to_string(i + 1)).c_str() : "t1/t2 marks", rgb,
+                                  ImGuiColorEditFlags_NoInputs))
+                c = ((uint32_t)std::lround(rgb[0] * 255) << 16) | ((uint32_t)std::lround(rgb[1] * 255) << 8) |
+                    (uint32_t)std::lround(rgb[2] * 255);
+            ImGui::PopID();
+            if (i < kNumTraceColors && i != 3 && i != 7) ImGui::SameLine(0, 20);
+        }
+        if (ImGui::Button("Restore color-blind-friendly defaults")) cfg.colors = defaults;
+    }
 
     ImGui::SeparatorText("Order of channels");
     ImGui::TextWrapped(

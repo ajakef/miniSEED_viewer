@@ -1,0 +1,7 @@
+spectrogram: zoom-in/zoom-out should affect time axis only, not frequency axis. freq axis should be fixed in place.
+
+settings: pick a set of colorblind-friendly colors, and give the user the ability to change them under settings.
+
+spectra: welch average is currently set to 1025 samples. unless there's good reason to do 1025, it should be power-of-2 1024.
+
+main: remove the "magnify these traces" button, and make clicking on the "magnify" tab do that automatically. spectra, spectrogram, and split should all work after traces and time window in "main" are selected.
