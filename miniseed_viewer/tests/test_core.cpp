@@ -1,6 +1,7 @@
 // Checks of the non-graphical code. Compared against ObsPy/SciPy by tests/check_core.py.
 //   test_core load FILE...       prints a summary of what was read
 //   test_core dump OUTDIR        writes synthetic data, filtered data and spectra to OUTDIR
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -8,6 +9,7 @@
 
 #include "../src/data.h"
 #include "../src/dsp.h"
+#include "../src/stats.h"
 
 using namespace msv;
 
@@ -53,6 +55,25 @@ int main(int argc, char** argv) {
             }
         return 0;
     }
+    if (argc >= 3 && !strcmp(argv[1], "time")) {  // how long does loading take?
+        std::vector<std::string> files(argv + 2, argv + argc);
+        std::vector<Trace> traces;
+        std::vector<std::string> msgs;
+        auto t0 = std::chrono::steady_clock::now();
+        scan_files(traces, files, msgs);
+        auto t1 = std::chrono::steady_clock::now();
+        std::vector<Trace*> all;
+        for (auto& t : traces) all.push_back(&t);
+        load_traces(all, msgs);
+        auto t2 = std::chrono::steady_clock::now();
+        int64_t n = 0;
+        for (auto& t : traces)
+            for (auto& sg : t.segs) n += sg.size();
+        printf("%zu files -> %zu traces, %lld samples: scan %.2f s, load %.2f s\n", files.size(), traces.size(),
+               (long long)n, std::chrono::duration<double>(t1 - t0).count(), std::chrono::duration<double>(t2 - t1).count());
+        for (auto& m : msgs) printf("MSG %s\n", m.c_str());
+        return 0;
+    }
     if (argc >= 3 && !strcmp(argv[1], "dump")) {
         std::string out = argv[2];
         const double fs = 200;
@@ -90,6 +111,18 @@ int main(int argc, char** argv) {
         Spectrum p2 = power_spectrum(x.data(), x.size(), fs, true, 1024);
         write_vec(out + "/spec2_f.bin", p2.f);
         write_vec(out + "/spec2_p.bin", p2.p);
+        {   // moving statistics of the same data, as an integer record (like real data)
+            Segment seg;
+            seg.kind = Segment::Kind::Int32;
+            seg.t0 = 100.0;
+            seg.dt = 1.0 / fs;
+            for (double v : x) seg.i32.push_back((int32_t)std::lround(v));
+            MovingStats ms = moving_stats(seg, 110.0, 190.0, 5.0, 300);
+            write_vec(out + "/ms_t.bin", ms.t);
+            write_vec(out + "/ms_rms.bin", ms.rms);
+            write_vec(out + "/ms_skew.bin", ms.skew);
+            write_vec(out + "/ms_kurt.bin", ms.kurt);
+        }
         printf("time fmt: %s | %s\n", format_time(1791590126.51).c_str(), format_time(0.9996, 3).c_str());
         return 0;
     }

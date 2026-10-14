@@ -7,6 +7,7 @@
 #include "imgui.h"
 #include "implot.h"
 #include "parallel.h"
+#include "stats.h"
 
 namespace msv {
 
@@ -50,6 +51,7 @@ App::App(const std::vector<std::string>& files) {
     ImPlotStyle& ps = ImPlot::GetStyle();
     ps.UseISO8601 = true;
     ps.Use24HourClock = true;
+    ps.PlotPadding = ImVec2(4, 1);  // little space around plots, so stacked plots use the screen well
 
     add_files(files);
 }
@@ -74,9 +76,10 @@ void App::save_all() {
 void App::add_files(const std::vector<std::string>& files) {
     if (files.empty()) return;
     n_files_ += (int)files.size();
-    ::msv::add_files(traces_, files, messages_);
+    ::msv::scan_files(traces_, files, messages_);
     topts_.resize(traces_.size());
     calib_sel_.assign(traces_.size(), 0);
+    last_used_.assign(traces_.size(), 0);
     rebuild_order();
     reset_views();
     clear_caches();
@@ -103,6 +106,8 @@ void App::clear_caches() {
     spec_cache_.clear();
     spec_stale_.clear();
     rms_cache_.clear();
+    stats_cache_.clear();
+    stats_stale_.clear();
 }
 
 double App::off(int ti) const { return cfg.relative_time ? traces_[ti].t_min : 0.0; }
@@ -198,7 +203,7 @@ std::string App::units_of(const std::vector<int>& rows) const {
 
 bool App::busy() const {
     // Spectra wait 0.15 s after the view stops moving, then appear; keep redrawing until then.
-    return have_win_ && ImGui::GetTime() - view_changed_ < 0.4;
+    return loading_pending_ || (have_win_ && ImGui::GetTime() - view_changed_ < 0.4);
 }
 
 bool App::view_stable() const { return ImGui::GetTime() - view_changed_ > 0.15; }
@@ -330,6 +335,65 @@ SpecResult make_spec_result(const Spectrum& sp) {
 
 }  // namespace
 
+std::vector<std::shared_ptr<const StatsResult>> App::stats_for(const std::vector<int>& rows, const MagState& ms,
+                                                               int nbins, const char* panel) {
+    std::vector<std::shared_ptr<const StatsResult>> out(rows.size());
+    const bool stable = view_stable();
+    std::vector<std::string> keys(rows.size()), stale_keys(rows.size());
+    std::vector<int> todo;
+    for (size_t r = 0; r < rows.size(); r++) {
+        int ti = rows[r];
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "|v%.6f|%.6f|w%.6g|%d", off(ti) + view_[0], off(ti) + view_[1], ms.st_win, nbins);
+        keys[r] = proc_key(ti, true) + buf;
+        stale_keys[r] = std::string(panel) + "|" + std::to_string(ti);
+        auto it = stats_cache_.find(keys[r]);
+        if (it != stats_cache_.end()) {
+            out[r] = it->second;
+            stats_stale_[stale_keys[r]] = it->second;
+        } else if (stable) {
+            todo.push_back((int)r);
+        } else {
+            auto st = stats_stale_.find(stale_keys[r]);
+            if (st != stats_stale_.end()) out[r] = st->second;
+        }
+    }
+    if (todo.empty()) return out;
+    if (stats_cache_.size() > 300) stats_cache_.clear();
+    std::vector<std::shared_ptr<const StatsResult>> res(todo.size());
+    parallel_for((int)todo.size(), [&](int k) {
+        int ti = rows[todo[k]];
+        auto P = proc_for(ti, true);
+        if (!P) return;
+        auto R = std::make_shared<StatsResult>();
+        for (const Segment& seg : P->segs) {
+            MovingStats m = moving_stats(seg, off(ti) + view_[0], off(ti) + view_[1], ms.st_win, nbins);
+            Series a, b, c;
+            for (size_t i = 0; i < m.t.size(); i++) {
+                a.x.push_back(m.t[i]);
+                a.y.push_back(m.rms[i]);
+                if (!std::isnan(m.skew[i])) {
+                    b.x.push_back(m.t[i]);
+                    b.y.push_back(m.skew[i]);
+                    c.x.push_back(m.t[i]);
+                    c.y.push_back(m.kurt[i]);
+                }
+            }
+            R->rms.push_back(std::move(a));
+            R->skew.push_back(std::move(b));
+            R->kurt.push_back(std::move(c));
+        }
+        res[k] = R;
+    });
+    for (size_t k = 0; k < todo.size(); k++) {
+        if (!res[k]) continue;
+        stats_cache_[keys[todo[k]]] = res[k];
+        stats_stale_[stale_keys[todo[k]]] = res[k];
+        out[todo[k]] = res[k];
+    }
+    return out;
+}
+
 std::vector<std::shared_ptr<const SpecResult>> App::spectra_for(const std::vector<int>& rows, bool wf,
                                                                 const SpecState& ss, const char* panel) {
     std::vector<std::shared_ptr<const SpecResult>> out(rows.size());
@@ -393,7 +457,47 @@ std::vector<std::shared_ptr<const SpecResult>> App::spectra_for(const std::vecto
 // ---------------------------------------------------------------------------
 // Frame
 
+// Reads the samples of the traces on the current page if they are not in memory yet.
+// Returns false (after drawing a message) on the frame before the reading starts, so the
+// message is visible while the program is busy. Old pages are dropped to limit memory.
+bool App::ensure_page_loaded() {
+    last_used_.resize(traces_.size(), 0);
+    std::vector<Trace*> need;
+    int64_t samples = 0;
+    for (int ti : page_traces(false)) {
+        last_used_[ti] = frame_no_;
+        if (!traces_[ti].loaded) {
+            need.push_back(&traces_[ti]);
+            samples += traces_[ti].nsamples;
+        }
+    }
+    if (need.empty()) {
+        loading_pending_ = false;
+        return true;
+    }
+    if (!loading_pending_) {
+        loading_pending_ = true;
+        ImGui::Spacing();
+        ImGui::Text("Reading %d channel(s), %.1f million samples ...", (int)need.size(), samples / 1e6);
+        return false;
+    }
+    loading_pending_ = false;
+    ::msv::load_traces(need, messages_);
+    // Keep at most two pages of traces in memory: drop the ones used longest ago.
+    const size_t keep = 2 * (size_t)std::max(1, cfg.n_per_screen);
+    std::vector<int> loaded;
+    for (size_t i = 0; i < traces_.size(); i++)
+        if (traces_[i].loaded) loaded.push_back((int)i);
+    if (loaded.size() > keep) {
+        std::sort(loaded.begin(), loaded.end(), [&](int a, int b) { return last_used_[a] < last_used_[b]; });
+        for (size_t k = 0; k + keep < loaded.size(); k++)
+            if (last_used_[loaded[k]] != frame_no_) unload_trace(traces_[loaded[k]]);
+    }
+    return true;
+}
+
 void App::frame() {
+    frame_no_++;
     // Note when the magnify axes move, so spectra can wait until they settle.
     if (view_[0] != last_view_[0] || view_[1] != last_view_[1]) {
         last_view_[0] = view_[0];
@@ -414,6 +518,7 @@ void App::frame() {
             "    miniseed_viewer file1.mseed file2.mseed ...");
         return;
     }
+    if (!ensure_page_loaded()) return;
     if (ImGui::BeginTabBar("tabs")) {
         auto flag = [&](int i) { return goto_tab_ == i ? ImGuiTabItemFlags_SetSelected : 0; };
         if (ImGui::BeginTabItem("Main", nullptr, flag(0))) {
@@ -449,11 +554,21 @@ void App::draw_top_bar() {
     ImGui::Text("%d file(s), %d channel(s)", n_files_, (int)traces_.size());
     if (n_pages() > 1 && !show_config_) {
         ImGui::SameLine(0, 30);
-        if (ImGui::Button("<##pg")) page_ = std::max(0, page_ - 1);
+        ImGui::BeginDisabled(page_ == 0);
+        if (ImGui::Button("< Previous")) page_ = std::max(0, page_ - 1);
+        ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::Text("page %d of %d", page_ + 1, n_pages());
+        const int n = std::max(1, cfg.n_per_screen);
+        ImGui::Text("page %d of %d (channels %d-%d of %d)", page_ + 1, n_pages(), page_ * n + 1,
+                    std::min((int)order_.size(), (page_ + 1) * n), (int)order_.size());
         ImGui::SameLine();
-        if (ImGui::Button(">##pg")) page_ = std::min(n_pages() - 1, page_ + 1);
+        ImGui::BeginDisabled(page_ + 1 >= n_pages());
+        if (ImGui::Button("Next >")) page_ = std::min(n_pages() - 1, page_ + 1);
+        ImGui::EndDisabled();
+        if (!ImGui::GetIO().WantTextInput) {
+            if (ImGui::IsKeyPressed(ImGuiKey_PageUp)) page_ = std::max(0, page_ - 1);
+            if (ImGui::IsKeyPressed(ImGuiKey_PageDown)) page_ = std::min(n_pages() - 1, page_ + 1);
+        }
     }
     const char* label = show_config_ ? "Back" : "Settings";
     ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - ImGui::CalcTextSize(label).x -
@@ -540,10 +655,13 @@ void App::trace_label(int ti, bool checkbox, bool settings_button, const char* l
     ImVec4 col = trace_color(ti);
     if (!tr.on) col = ImVec4(0.5f, 0.5f, 0.5f, 1);
     if (checkbox) {
-        ImGui::Checkbox("##on", &tr.on);
-        ImGui::SameLine();
+        // The name is the check box's label, so clicking the name works like clicking the box.
+        ImGui::PushStyleColor(ImGuiCol_Text, col);
+        ImGui::Checkbox(tr.id.c_str(), &tr.on);
+        ImGui::PopStyleColor();
+    } else {
+        ImGui::TextColored(col, "%s", tr.id.c_str());
     }
-    ImGui::TextColored(col, "%s", tr.id.c_str());
     if (line2) ImGui::TextUnformatted(line2);
     if (settings_button) {
         TraceOpts& to = topts_[ti];
@@ -801,7 +919,7 @@ void App::draw_config() {
             ImGui::PopID();
             if (i < kNumTraceColors && i != 3 && i != 7) ImGui::SameLine(0, 20);
         }
-        if (ImGui::Button("Restore color-blind-friendly defaults")) cfg.colors = defaults;
+        if (ImGui::Button("Restore original colors")) cfg.colors = defaults;
     }
 
     ImGui::SeparatorText("Order of channels");

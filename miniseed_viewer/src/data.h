@@ -62,14 +62,19 @@ private:
 };
 
 // One channel: all the segments found for one network.station.location.channel.
+// Opening files only reads their headers (fast); the samples are read when a trace is
+// needed (load_traces) and can be dropped again (unload_trace).
 struct Trace {
     std::string id;  // NET.STA.LOC.CHA
     std::string net, sta, loc, cha;
     std::string file;      // first file this channel was found in
     int file_order = 0;    // position of that file on the command line
-    std::vector<Segment> segs;
+    std::vector<std::string> sources;  // every file that holds part of this channel
+    bool loaded = false;               // are the samples in memory?
+    int64_t nsamples = 0;              // total samples (known without loading)
+    std::vector<Segment> segs;         // empty until loaded
     double t_min = 0, t_max = 0;  // time of first and last sample
-    double v_min = 0, v_max = 0;  // smallest and largest sample
+    double v_min = 0, v_max = 0;  // smallest and largest sample (known once loaded)
     double rate = 0;              // samples per second (first segment)
     bool on = true;               // shown in the plots
 };
@@ -79,13 +84,19 @@ struct LoadResult {
     std::vector<std::string> messages;  // problems, one per line
 };
 
-// Reads miniSEED files (version 2 or 3, any encoding libmseed understands) and
-// merges them into traces, in order of first appearance.
-LoadResult load_files(const std::vector<std::string>& files);
+// Reads the headers of miniSEED files (version 2 or 3) and adds the channels found to
+// traces, in order of first appearance. Fast: no samples are decoded.
+void scan_files(std::vector<Trace>& traces, const std::vector<std::string>& files,
+                std::vector<std::string>& messages);
 
-// Appends the contents of more files to an existing set of traces.
-void add_files(std::vector<Trace>& traces, const std::vector<std::string>& files,
-               std::vector<std::string>& messages);
+// Reads the samples of the given traces (all their files, several at a time).
+void load_traces(const std::vector<Trace*>& wanted, std::vector<std::string>& messages);
+
+// Frees the samples of a trace (it can be loaded again later).
+void unload_trace(Trace& tr);
+
+// Scan and load everything (used by the tests).
+LoadResult load_files(const std::vector<std::string>& files);
 
 // Copies the samples of tr between t1 and t2 (one Segment per gap-free run).
 // The copies are stored in whatever form the trace uses.

@@ -50,8 +50,15 @@ struct SgData {
     ~SgData();
 };
 
+// Moving statistics for one trace: one series of points per gap-free piece.
+struct StatsResult {
+    std::vector<Series> rms, skew, kurt;  // x = absolute time
+};
+
 struct MagState {
     bool overlay = false;
+    bool st_rms = false, st_skew = false, st_kurt = false;  // moving statistics to show (not in overlay mode)
+    double st_win = 5.0;                                    // their window length, seconds
     bool global_scale = false;  // scale all traces together instead of each on its own
     bool fit_visible = true;    // scale to what is on screen, not the whole processed window
 };
@@ -105,6 +112,9 @@ private:
     int page_ = 0;
     int goto_tab_ = -1;
     bool show_config_ = false;
+    bool loading_pending_ = false;   // a page of traces is about to be read from disk
+    std::vector<long> last_used_;    // per trace: frame number when it was last on screen
+    long frame_no_ = 0;
 
     std::vector<FilterSpec> filters_;
     ProcOpts proc_;
@@ -148,6 +158,8 @@ private:
     std::map<std::string, std::shared_ptr<SgData>> sg_cache_;
     std::map<std::string, std::shared_ptr<SgData>> sg_stale_;
     std::map<std::string, double> rms_cache_;
+    std::map<std::string, std::shared_ptr<const StatsResult>> stats_cache_;
+    std::map<std::string, std::shared_ptr<const StatsResult>> stats_stale_;
 
     void rebuild_order();
     void reset_views();
@@ -170,6 +182,8 @@ private:
     double rms_for(int ti, bool with_filter);
     std::vector<std::shared_ptr<const SpecResult>> spectra_for(const std::vector<int>& rows, bool with_filter,
                                                                const SpecState& ss, const char* panel);
+    std::vector<std::shared_ptr<const StatsResult>> stats_for(const std::vector<int>& rows, const MagState& ms,
+                                                              int nbins, const char* panel);
     std::vector<std::shared_ptr<SgData>> specgrams_for(const std::vector<int>& rows, bool with_filter,
                                                        const SgState& sg);
 
@@ -199,6 +213,7 @@ private:
     ImVec4 mark_color() const;
     bool combo_pow2(const char* label, int& v, int lo, int hi);
     void grow_window_if_needed();
+    bool ensure_page_loaded();
 };
 
 }  // namespace msv

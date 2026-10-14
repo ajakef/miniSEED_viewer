@@ -90,5 +90,21 @@ w2 = signal.windows.hann(1024, sym=True)
 f, p = signal.welch(x, fs=fs, window=w2, nperseg=1024, noverlap=512, detrend="constant", scaling="density")
 fm, pm = rd("spec2_f.bin"), rd("spec2_p.bin")
 report("Welch spectrum", np.allclose(fm, f[1:]) and np.allclose(pm, p[1:], rtol=1e-9), "")
+# ---- moving statistics (integer data, 5 s window)
+from scipy import stats as sps
+xi = np.round(x)
+t = rd("ms_t.bin")
+centres = np.round((t - 100.0) * fs).astype(int)
+W = 1000
+rms_ref, sk_ref, ku_ref = [], [], []
+for c in centres:
+    w = xi[c - W // 2: c - W // 2 + W]
+    rms_ref.append(np.sqrt(np.mean(w ** 2)))
+    sk_ref.append(sps.skew(w))
+    ku_ref.append(sps.kurtosis(w, fisher=False))
+report("moving stats: some windows", len(t) > 100, f"{len(t)} windows")
+report("moving RMS", np.allclose(rd("ms_rms.bin"), rms_ref, rtol=1e-9))
+report("moving skewness", np.allclose(rd("ms_skew.bin"), sk_ref, rtol=1e-6, atol=1e-8))
+report("moving kurtosis", np.allclose(rd("ms_kurt.bin"), ku_ref, rtol=1e-6, atol=1e-8))
 print("ALL PASS" if ok else "SOME FAILED")
 sys.exit(0 if ok else 1)

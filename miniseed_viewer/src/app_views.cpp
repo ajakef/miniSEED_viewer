@@ -224,6 +224,25 @@ void App::magnify_toolbar(MagState& ms) {
     else
         ImGui::Text("Showing %s to %s (%.3f s). Click twice on a plot to zoom to a new window.",
                     fmt_disp(view_[0]).c_str(), fmt_disp(view_[1]).c_str(), view_[1] - view_[0]);
+
+    // Moving statistics, drawn under each trace (not available when traces are overlaid).
+    ImGui::BeginDisabled(ms.overlay);
+    ImGui::TextUnformatted("Stats:");
+    ImGui::SameLine();
+    ImGui::Checkbox("moving RMS", &ms.st_rms);
+    ImGui::SameLine();
+    ImGui::Checkbox("skewness", &ms.st_skew);
+    ImGui::SameLine();
+    ImGui::Checkbox("kurtosis", &ms.st_kurt);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
+    ImGui::InputDouble("window (s)", &ms.st_win, 0, 0, "%.3g");
+    if (!(ms.st_win > 0)) ms.st_win = 5.0;
+    ImGui::EndDisabled();
+    if (ms.overlay && (ms.st_rms || ms.st_skew || ms.st_kurt)) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(not shown in overlay mode)");
+    }
     ImGui::PopID();
 }
 
@@ -377,17 +396,92 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
             ImPlot::EndPlot();
         }
     } else {
+        // Each trace gets its plot, then a small plot below it for every statistic switched on.
+        const int nstat = (int)ms.st_rms + (int)ms.st_skew + (int)ms.st_kurt;
+        std::vector<std::shared_ptr<const StatsResult>> stats;
+        if (nstat > 0) stats = stats_for(rows, ms, nbins, id);
+        const float stat_h =
+            nstat > 0 ? std::max(18.0f, std::min(0.25f * row_h, 0.6f * row_h / (float)nstat)) : 0.0f;
+        const float trace_h = std::max(25.0f, row_h - nstat * stat_h);
+
+        // Draws one statistic's plot (kind 0 = RMS, 1 = skewness, 2 = kurtosis).
+        auto stat_plot = [&](int ti, size_t r, int kind, bool last) {
+            static const char* names[3] = {"RMS", "skewness", "kurtosis"};
+            const std::vector<Series>* ser = nullptr;
+            if (stats[r]) ser = kind == 0 ? &stats[r]->rms : kind == 1 ? &stats[r]->skew : &stats[r]->kurt;
+            double lo = 1e300, hi = -1e300;
+            if (ser)
+                for (const Series& s : *ser)
+                    for (size_t i = 0; i < s.y.size(); i++) {
+                        if (s.x[i] < off(ti) + view_[0] || s.x[i] > off(ti) + view_[1]) continue;
+                        lo = std::min(lo, s.y[i]);
+                        hi = std::max(hi, s.y[i]);
+                    }
+            const double ref = kind == 1 ? 0.0 : kind == 2 ? 3.0 : 0.0;  // value for a normal distribution
+            if (kind > 0 && lo <= hi) {  // keep the reference value in view
+                lo = std::min(lo, ref);
+                hi = std::max(hi, ref);
+            }
+            if (lo > hi) {
+                lo = 0;
+                hi = 1;
+            }
+            double span = hi - lo, big = std::max(std::fabs(lo), std::fabs(hi));
+            if (span <= 1e-12 * big || big == 0) {
+                double m = big > 0 ? big : 1.0;
+                lo -= m;
+                hi += m;
+            } else {
+                lo -= 0.08 * span;
+                hi += 0.08 * span;
+            }
+            ImGui::PushID(kind + 100);
+            char lbl[64];
+            std::snprintf(lbl, sizeof lbl, "%s (%.3g s)", names[kind], ms.st_win);
+            ImGui::BeginChild("slbl", ImVec2(label_w, stat_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+            ImGui::TextColored(trace_color(ti), "%s", lbl);
+            ImGui::EndChild();
+            ImGui::SameLine(0, 0);
+            if (ImPlot::BeginPlot("##s", ImVec2(-1, last ? stat_h + axis_label_height() : stat_h), pflags)) {
+                setup_x(last);
+                const std::string yl = kind == 0 ? calib_for(ti).units : std::string();
+                ImPlot::SetupAxis(ImAxis_Y1, yl.empty() ? nullptr : yl.c_str(),
+                                  ImPlotAxisFlags_NoHighlight | ImPlotAxisFlags_Lock | (yl.empty() ? ImPlotAxisFlags_NoLabel : 0));
+                ImPlot::SetupAxisLimits(ImAxis_Y1, lo, hi, ImPlotCond_Always);
+                if (kind > 0) {  // faint reference line
+                    ImPlotSpec rs;
+                    rs.LineColor = ImVec4(0.6f, 0.6f, 0.6f, 0.5f);
+                    rs.Flags = ImPlotItemFlags_NoLegend | ImPlotInfLinesFlags_Horizontal;
+                    double rv = ref;
+                    ImPlot::PlotInfLines("##ref", &rv, 1, rs);
+                }
+                if (ser) {
+                    ImPlotSpec spec;
+                    spec.LineColor = trace_color(ti);
+                    spec.Flags = ImPlotItemFlags_NoLegend;
+                    for (const Series& s : *ser) {
+                        std::vector<double> xs(s.x);
+                        for (double& x : xs) x -= off(ti);
+                        ImPlot::PlotLine("##l", xs.data(), s.y.data(), (int)xs.size(), spec);
+                    }
+                }
+                mark_and_click();
+                ImPlot::EndPlot();
+            }
+            ImGui::PopID();
+        };
+
         bool aligned = ImPlot::BeginAlignedPlots("##align_mag");
         for (size_t r = 0; r < rows.size(); r++) {
             int ti = rows[r];
             ImGui::PushID(ti);
-            ImGui::BeginChild("lbl", ImVec2(label_w, row_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+            ImGui::BeginChild("lbl", ImVec2(label_w, trace_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
             trace_label(ti, false, true, notes[r].c_str());
             ImGui::EndChild();
             ImGui::SameLine(0, 0);
-            const bool last = (r + 1 == rows.size());
+            const bool last = (r + 1 == rows.size()) && nstat == 0;
             const std::string units = calib_for(ti).units;
-            if (ImPlot::BeginPlot("##p", ImVec2(-1, last ? row_h + axis_label_height() : row_h), pflags)) {
+            if (ImPlot::BeginPlot("##p", ImVec2(-1, last ? trace_h + axis_label_height() : trace_h), pflags)) {
                 setup_x(last);
                 ImPlot::SetupAxis(ImAxis_Y1, units.c_str(), ImPlotAxisFlags_NoHighlight | ImPlotAxisFlags_Lock);
                 ImPlot::SetupAxisLimits(ImAxis_Y1, ylo[r], yhi[r], ImPlotCond_Always);
@@ -398,6 +492,14 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
                     ImPlot::PlotLine("##l", s.x.data(), s.y.data(), (int)s.x.size(), spec);
                 mark_and_click();
                 ImPlot::EndPlot();
+            }
+            const bool final_row = (r + 1 == rows.size());
+            int shown = 0;
+            for (int kind = 0; kind < 3; kind++) {
+                bool on = kind == 0 ? ms.st_rms : kind == 1 ? ms.st_skew : ms.st_kurt;
+                if (!on) continue;
+                shown++;
+                stat_plot(ti, r, kind, final_row && shown == nstat);
             }
             ImGui::PopID();
         }
