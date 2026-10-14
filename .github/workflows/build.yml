@@ -1,0 +1,63 @@
+# Builds miniseed_viewer for Ubuntu and macOS on GitHub's computers.
+# - every push / pull request: build and test
+# - push of a tag like v0.1.0: also publish the files on the repository's Releases page
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ubuntu:
+    # Built on the oldest Ubuntu we support, so that the program also runs on newer ones.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: >
+          sudo apt-get update && sudo apt-get install -y cmake g++ python3-pip
+          libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl-dev
+      - name: Build and package
+        run: miniseed_viewer/packaging/build_linux.sh
+      - name: Check reading, filters, spectra and statistics against ObsPy/SciPy
+        run: |
+          pip install numpy scipy obspy
+          cd miniseed_viewer
+          python3 tests/check_core.py build-release/test_core tests/data
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu
+          path: miniseed_viewer/dist/*.tar.gz
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cmake
+        run: brew list cmake >/dev/null 2>&1 || brew install cmake
+      - name: Build and package
+        run: miniseed_viewer/packaging/build_macos.sh
+      - name: Check that the program starts
+        run: miniseed_viewer/build-release/miniseed_viewer --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: miniseed_viewer/dist/*.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [ubuntu, macos]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: files
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" files/*/* --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --notes "miniseed_viewer ${{ github.ref_name }}"

@@ -32,6 +32,29 @@ Notes on what the numbers mean:
 * Samples are held as 32-bit integers exactly as recorded. Filtered/detrended copies are
   made only for the traces on the current page and only for the chosen window.
 
+## Installing
+
+**Ubuntu** (22.04 or newer, 64-bit Intel/AMD): unpack `miniseed_viewer-VERSION-linux-x86_64.tar.gz` anywhere and run
+`./miniseed_viewer file1.mseed ...` (or put the file somewhere on your PATH). It is one self-contained file;
+it only needs the graphics library that every desktop Ubuntu already has (`libopengl0`).
+
+**macOS** (11 or newer, Intel and Apple Silicon): unpack `miniseed_viewer-VERSION-macos.zip` and read
+"READ ME FIRST.txt" inside (macOS asks for permission once because the app has no paid Apple signature).
+
+Both files are produced by the automatic build in `.github/workflows/build.yml` (see "Making a release").
+
+## Making a release
+
+The files are built on GitHub's computers, so no Mac is needed:
+1. Put the repository on GitHub (once): create an empty repository there, then
+   `git remote add origin git@github.com:YOU/REPO.git` and `git push -u origin main`.
+2. Every push builds Ubuntu and macOS versions (Actions tab > latest run > Artifacts).
+3. To publish: change `VERSION`, commit, then `git tag v0.1.0 && git push origin v0.1.0`.
+   The files appear under the repository's Releases page.
+
+To build by hand: `packaging/build_linux.sh` (on the oldest Ubuntu you want to support) or
+`packaging/build_macos.sh` (on a Mac). Results go to `dist/`.
+
 ## Building (Ubuntu)
 
     sudo apt install cmake g++ libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl-dev
@@ -58,3 +81,4 @@ without a person. It uses a private settings folder, so it does not touch your o
     src/settings.*  saved options, saved filters, channel sort order
     src/app*.cpp    the interface (app_views: magnify/spectra/split; app_specgram: spectrogram)
     src/main.cpp    window setup (and the test-script player)
+    packaging/      build scripts for the downloadable Ubuntu and macOS files

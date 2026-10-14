@@ -15,6 +15,7 @@
 #include "implot.h"
 
 #include "../third_party/fonts/roboto_medium.h"
+#include "version.h"
 
 static std::vector<std::string> g_dropped;
 
@@ -83,6 +84,10 @@ static void on_error(int code, const char* msg) { std::fprintf(stderr, "GLFW err
 int main(int argc, char** argv) {
     std::vector<std::string> files;
     for (int i = 1; i < argc; i++) {
+        if (!std::strcmp(argv[i], "--version")) {
+            std::printf("miniseed_viewer %s\n", MSV_VERSION);
+            return 0;
+        }
         if (!std::strcmp(argv[i], "-h") || !std::strcmp(argv[i], "--help")) {
             std::printf(
                 "usage: miniseed_viewer file1.mseed [file2.mseed ...]\n"
@@ -105,7 +110,8 @@ int main(int argc, char** argv) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
 #endif
-    GLFWwindow* window = glfwCreateWindow(1400, 850, "miniseed_viewer", nullptr, nullptr);
+    GLFWwindow* window =
+        glfwCreateWindow(1400, 850, "miniseed_viewer " MSV_VERSION, nullptr, nullptr);
     if (!window) {
         glfwTerminate();
         return 1;
@@ -123,7 +129,14 @@ int main(int argc, char** argv) {
     glfwGetWindowContentScale(window, &xs, &ys);
     io.Fonts->AddFontFromMemoryCompressedBase85TTF(roboto_medium_compressed_data_base85, 15.0f * xs);
     ImGui::StyleColorsDark();
+#if defined(__APPLE__)
+    // On a Retina screen the window is measured in points but drawn in pixels: draw the text sharply
+    // (at xs times the size) and shrink it back, instead of making everything bigger.
+    const float base_scale = 1.0f / xs;
+#else
+    const float base_scale = 1.0f;
     ImGui::GetStyle().ScaleAllSizes(xs);
+#endif
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
@@ -152,7 +165,7 @@ int main(int argc, char** argv) {
                 app.add_files(g_dropped);
                 g_dropped.clear();
             }
-            io.FontGlobalScale = app.cfg.ui_scale;
+            io.FontGlobalScale = app.cfg.ui_scale * base_scale;
 
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();

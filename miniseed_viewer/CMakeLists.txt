@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 project(miniseed_viewer LANGUAGES C CXX)
 
+file(STRINGS ${CMAKE_SOURCE_DIR}/VERSION MSV_VERSION_STRING LIMIT_COUNT 1)
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "" FORCE)  # runs on macOS 11 and newer
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE)
@@ -48,6 +53,10 @@ target_compile_options(imgui PRIVATE -w)
 
 add_executable(miniseed_viewer src/main.cpp src/app.cpp src/app_views.cpp src/app_specgram.cpp)
 target_link_libraries(miniseed_viewer core imgui Threads::Threads)
+target_compile_definitions(miniseed_viewer PRIVATE MSV_VERSION="${MSV_VERSION_STRING}")
+if(APPLE)
+  target_compile_definitions(miniseed_viewer PRIVATE GL_SILENCE_DEPRECATION)  # Apple calls OpenGL "deprecated" but it still works
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_options(miniseed_viewer PRIVATE -static-libstdc++ -static-libgcc)
 endif()
