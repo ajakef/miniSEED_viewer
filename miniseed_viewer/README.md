@@ -1,0 +1,55 @@
+# miniseed_viewer
+
+A quick-look viewer for miniSEED files, in the spirit of PASSCAL's PQL.
+
+    miniseed_viewer file1.mseed file2.mseed ...
+
+Files can also be dropped onto the window.
+
+## Using it
+
+| Tab | What it does |
+|---|---|
+| Main | Raw traces. Click once to set t1, click again to set t2, then press "Magnify selection". Turn traces on/off with the check boxes. |
+| Magnify | Selected window, with filtering, detrending and polarity reversal (for all traces, or per trace with each trace's "settings" button). RMS of what is on screen is shown under each name. Click twice on a plot to zoom to a new window ("Back" undoes it). |
+| Spectra | Power spectral density of the traces in the Magnify tab's current view. One spectrum for the whole view, or Welch average. |
+| Split | Spectra above, magnify below; spectra follow the magnify zoom. |
+
+Mouse: left click = pick time, right drag = pan, wheel = zoom time.
+"Settings" (top right) holds traces per screen, channel sort order, time axis
+(clock time or seconds since start of trace), default detrend, spectra defaults.
+Settings and saved filters are kept in `~/.config/miniseed_viewer/`
+(`%APPDATA%\miniseed_viewer` on Windows, `~/Library/Application Support/miniseed_viewer` on Mac).
+
+Notes on what the numbers mean:
+* Everything is in raw counts (no instrument response).
+* Spectra are one-sided power spectral density, counts^2/Hz, Hann taper, mean removed.
+* A gap in the data breaks the line; spectra use the longest gap-free piece in view.
+* Samples are held as 32-bit integers exactly as recorded. Filtered/detrended copies are
+  made only for the traces on the current page and only for the chosen window.
+
+## Building (Ubuntu)
+
+    sudo apt install cmake g++ libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl-dev
+    cmake -S . -B build && cmake --build build -j
+    build/miniseed_viewer ../sample_miniSEED/*.mseed
+
+All libraries are bundled as source in `third_party/` (see `third_party/README.md`),
+so building needs no network access.
+
+## Tests
+
+    python tests/check_core.py build/test_core ../sample_miniSEED   # reading, filters, spectra vs ObsPy/SciPy
+    tests/run_ui.sh SCRIPT OUTDIR files...                          # drives the real window, saves screenshots
+
+`run_ui.sh` plays back a text script (`frames N`, `click X Y`, `move`, `down`, `up`,
+`rdown`, `rup`, `wheel DY`, `shot FILE.ppm`, `quit`) so the interface can be exercised
+without a person. It uses a private settings folder, so it does not touch your own.
+
+## Layout
+
+    src/data.*      reading files, storage, fast min/max drawing summaries
+    src/dsp.*       Butterworth filters, detrend, power spectra
+    src/settings.*  saved options, saved filters, channel sort order
+    src/app*.cpp    the interface
+    src/main.cpp    window setup (and the test-script player)
