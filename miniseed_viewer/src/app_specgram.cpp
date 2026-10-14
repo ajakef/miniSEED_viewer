@@ -409,6 +409,30 @@ void App::draw_specgram(const char* id, float height, SgState& sg) {
             ImPlot::SetupAxisScale(ImAxis_Y1, sg.log_f ? ImPlotScale_Log10 : ImPlotScale_Linear);
             ImPlot::SetupAxisLinks(ImAxis_X1, &view_[0], &view_[1]);
             ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, dlo - dspan, dhi + dspan);
+            {   // Shade the whole plot, so that stretches without data are plainly "no data" and
+                // every row visibly spans the same time range.
+                ImPlotRect lim = ImPlot::GetPlotLimits();
+                ImVec2 p0 = ImPlot::PlotToPixels(lim.X.Min, lim.Y.Max), p1 = ImPlot::PlotToPixels(lim.X.Max, lim.Y.Min);
+                ImDrawList* dl = ImPlot::GetPlotDrawList();
+                ImPlot::PushPlotClipRect();
+                dl->AddRectFilled(p0, p1, IM_COL32(80, 80, 88, 110));
+                const bool has = res[r] && res[r]->w > 0;
+                auto gap_label = [&](double xa, double xb) {  // label a stretch of time with no data
+                    ImVec2 a = ImPlot::PlotToPixels(xa, lim.Y.Max), b = ImPlot::PlotToPixels(xb, lim.Y.Min);
+                    const char* txt = "no data";
+                    ImVec2 ts = ImGui::CalcTextSize(txt);
+                    if (b.x - a.x > ts.x + 12 && b.y - a.y > ts.y + 4)
+                        dl->AddText(ImVec2(0.5f * (a.x + b.x) - 0.5f * ts.x, 0.5f * (a.y + b.y) - 0.5f * ts.y),
+                                    IM_COL32(190, 190, 200, 200), txt);
+                };
+                if (!has) {
+                    gap_label(lim.X.Min, lim.X.Max);
+                } else {
+                    if (res[r]->t0 > lim.X.Min) gap_label(lim.X.Min, res[r]->t0);
+                    if (res[r]->t1 < lim.X.Max) gap_label(res[r]->t1, lim.X.Max);
+                }
+                ImPlot::PopPlotClipRect();
+            }
             if (res[r] && res[r]->w > 0 && res[r]->tex)
                 ImPlot::PlotImage("##img", (ImTextureID)(intptr_t)res[r]->tex, ImPlotPoint(res[r]->t0, res[r]->f0),
                                   ImPlotPoint(res[r]->t1, res[r]->f1), ImVec2(0, 1), ImVec2(1, 0));
