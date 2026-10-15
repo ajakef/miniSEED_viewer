@@ -106,5 +106,19 @@ report("moving stats: some windows", len(t) > 100, f"{len(t)} windows")
 report("moving RMS", np.allclose(rd("ms_rms.bin"), rms_ref, rtol=1e-9))
 report("moving skewness", np.allclose(rd("ms_skew.bin"), sk_ref, rtol=1e-6, atol=1e-8))
 report("moving kurtosis", np.allclose(rd("ms_kurt.bin"), ku_ref, rtol=1e-6, atol=1e-8))
+# ---- picks file: readable in Python, ISO times
+import csv
+rows = [r for r in csv.reader(l for l in open(os.path.join(d, "picks.csv")) if not l.startswith("#"))]
+report("picks file header", rows[0] == ["time_utc", "channel", "label"])
+times = [obspy.UTCDateTime(r[0]).timestamp for r in rows[1:]]
+report("picks sorted by time and in ISO format", times == sorted(times) and rows[1][0] == "2026-10-10T00:00:00.000000Z", rows[1][0])
+report("pick times exact", abs(times[2] - 1791600000.123456) < 1e-5 and abs(times[1] - 1791597933.25) < 1e-6)
+report("comma in label replaced", rows[1][2] == "a;b")
+try:
+    import pandas as pd
+    df = pd.read_csv(os.path.join(d, "picks.csv"), comment="#", parse_dates=["time_utc"])
+    report("pandas reads the picks file", len(df) == 3 and str(df.time_utc.dtype).startswith("datetime64"), str(df.time_utc.dtype))
+except ImportError:
+    print("(pandas not installed: skipped)")
 print("ALL PASS" if ok else "SOME FAILED")
 sys.exit(0 if ok else 1)

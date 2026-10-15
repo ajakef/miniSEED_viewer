@@ -2,6 +2,7 @@
 #pragma once
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -62,6 +63,10 @@ struct Calib {
 // Calibrations are kept by channel code (NET.STA.LOC.CHA).
 void load_calib(std::map<std::string, Calib>& calib);
 void save_calib(const std::map<std::string, Calib>& calib);
+
+// Channels whose polarity is flipped (remembered between runs).
+void load_flips(std::set<std::string>& flips);
+void save_flips(const std::set<std::string>& flips);
 
 void load_filters(std::vector<FilterSpec>& filters);
 void save_filters(const std::vector<FilterSpec>& filters);

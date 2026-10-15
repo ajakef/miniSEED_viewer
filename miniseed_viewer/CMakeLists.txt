@@ -23,7 +23,7 @@ target_include_directories(mseed PUBLIC ${TP}/libmseed)
 target_compile_options(mseed PRIVATE -w)
 
 # --- the part of the program that has no graphics ---
-add_library(core STATIC src/data.cpp src/dsp.cpp src/stats.cpp src/settings.cpp)
+add_library(core STATIC src/data.cpp src/dsp.cpp src/stats.cpp src/picks.cpp src/settings.cpp)
 target_include_directories(core PUBLIC ${TP}/libmseed ${TP}/pocketfft)
 target_link_libraries(core PUBLIC mseed Threads::Threads)
 if(NOT MSVC)

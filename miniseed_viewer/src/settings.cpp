@@ -262,6 +262,24 @@ void load_calib(std::map<std::string, Calib>& calib) {
 }
 
 // ---------------------------------------------------------------------------
+// Polarity file: one flipped channel per line.
+
+void save_flips(const std::set<std::string>& flips) {
+    std::ofstream f(config_dir() + "/polarity.txt");
+    for (const std::string& id : flips) f << id << "\n";
+}
+
+void load_flips(std::set<std::string>& flips) {
+    flips.clear();
+    std::ifstream f(config_dir() + "/polarity.txt");
+    std::string line;
+    while (std::getline(f, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (!line.empty()) flips.insert(line);
+    }
+}
+
+// ---------------------------------------------------------------------------
 
 std::vector<int> sort_order(const std::vector<Trace>& traces, const std::vector<SortItem>& order) {
     auto base = [](const std::string& p) {

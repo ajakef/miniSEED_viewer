@@ -3,12 +3,14 @@
 #include <array>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "data.h"
 #include "imgui.h"
 #include "dsp.h"
+#include "picks.h"
 #include "settings.h"
 
 namespace msv {
@@ -42,6 +44,7 @@ struct SgData {
     double t0 = 0, t1 = 1;      // display time of the left and right edge
     double f0 = 0, f1 = 1;      // frequency at the bottom and top edge
     double p_lo = 0, p_hi = 0;  // typical low and high power (for automatic colours)
+    double p_max = 0;           // the highest value anywhere
     unsigned tex = 0;           // OpenGL texture holding the picture (0 = none yet)
     std::string tex_sig;        // colours the picture was made with
     SgData() = default;
@@ -57,6 +60,7 @@ struct StatsResult {
 
 struct MagState {
     bool overlay = false;
+    bool pick_mode = false;      // clicks add/remove event picks instead of choosing a zoom window
     bool st_rms = false, st_skew = false, st_kurt = false;  // moving statistics to show (not in overlay mode)
     double st_win = 5.0;                                    // their window length, seconds
     bool global_scale = false;  // scale all traces together instead of each on its own
@@ -84,6 +88,8 @@ struct SgState {
     bool log_f = true;
     bool same_filter = true;
     bool filtered = true;
+    bool normalize = false;      // each trace's peak = top of the color scale
+    double db_rel[2] = {-60, 0}; // color range (dB below each trace's peak) when normalized and not automatic
     int cmap = 0;                // index into the list of colour maps
     bool auto_db = true;
     double db[2] = {-100, -20};  // colour range when not automatic
@@ -126,6 +132,17 @@ private:
     int edit_filter_ = 0;
     FilterSpec draft_;    // filter being edited in the filter window
     int draft_src_ = -2;  // which saved filter draft_ was copied from
+
+    std::set<std::string> flips_;  // channels whose polarity is flipped (the same flip whatever filter is used)
+
+    // event picks
+    std::vector<Pick> picks_;
+    std::string picks_path_;
+    char picks_path_buf_[512] = "";
+    bool picks_autosave_ = true;
+    char pick_label_[32] = "P";
+    bool show_picks_ = false;
+    std::string picks_msg_;
 
     // calibration (bitweight) by channel code
     std::map<std::string, Calib> calib_;
@@ -173,6 +190,9 @@ private:
     const Calib& calib_for(int ti) const;
     std::string units_of(const std::vector<int>& rows) const;
     bool view_stable() const;
+    bool effective_reverse(int ti) const;
+    void picks_changed();
+    void draw_picks_window();
 
     // ---- processing (app.cpp)
     std::string proc_key(int ti, bool with_filter) const;

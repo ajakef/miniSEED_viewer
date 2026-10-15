@@ -133,6 +133,7 @@ std::shared_ptr<SgData> compute_sg(const Processed& P, double v1, double v2, dou
     R->w = ncols;
     R->h = nrows;
     R->db.assign((size_t)ncols * nrows, std::nanf(""));
+    double peak = -1e300;
     std::vector<float> sample;
     const size_t stride = std::max<size_t>(1, (size_t)ncols * nrows / 50000);
     for (int c = 0; c < ncols; c++) {
@@ -153,6 +154,7 @@ std::shared_ptr<SgData> compute_sg(const Processed& P, double v1, double v2, dou
             float v = (float)(10.0 * std::log10(std::max(p * inv, 1e-30)));
             size_t idx = (size_t)r * ncols + c;
             R->db[idx] = v;
+            peak = std::max(peak, (double)v);
             if (idx % stride == 0) sample.push_back(v);
         }
     }
@@ -165,6 +167,7 @@ std::shared_ptr<SgData> compute_sg(const Processed& P, double v1, double v2, dou
         std::nth_element(sample.begin(), sample.begin() + k, sample.end());
         return (double)sample[k];
     };
+    R->p_max = peak;
     R->p_lo = pct(0.02);
     R->p_hi = pct(0.995);
     if (R->p_hi < -250) {  // no signal at all (a constant trace)
@@ -180,14 +183,14 @@ std::shared_ptr<SgData> compute_sg(const Processed& P, double v1, double v2, dou
 }
 
 // Makes (or remakes) the picture for a spectrogram with the given colours.
-void upload_picture(SgData& d, ImPlotColormap cmap, double dbmin, double dbmax, const std::string& sig) {
+void upload_picture(SgData& d, ImPlotColormap cmap, double dbmin, double dbmax, double offset, const std::string& sig) {
     if (d.w <= 0 || d.h <= 0) return;
     uint32_t lut[256];
     for (int i = 0; i < 256; i++) lut[i] = ImGui::ColorConvertFloat4ToU32(ImPlot::SampleColormap(i / 255.0f, cmap));
     const double span = std::max(dbmax - dbmin, 1e-9);
     std::vector<uint32_t> px(d.db.size());
     for (size_t i = 0; i < px.size(); i++) {
-        float v = d.db[i];
+        float v = d.db[i] + (float)offset;  // offset = minus the peak when normalizing
         if (std::isnan(v)) {
             px[i] = 0;  // transparent: no data here
             continue;
@@ -287,15 +290,18 @@ void App::specgram_toolbar(SgState& sg) {
         ImGui::Checkbox("Filtered", &sg.filtered);
     }
 
+    ImGui::Checkbox("Normalize each trace to its own peak", &sg.normalize);
+    ImGui::SameLine(0, 20);
     ImGui::Checkbox("Automatic color range", &sg.auto_db);
     const float w = fh * 5;
     if (!sg.auto_db) {
+        double* r = sg.normalize ? sg.db_rel : sg.db;
         ImGui::SameLine();
         ImGui::SetNextItemWidth(w);
-        ImGui::InputDouble("dB min", &sg.db[0], 0, 0, "%.0f");
+        ImGui::InputDouble(sg.normalize ? "dB min (below peak)" : "dB min", &r[0], 0, 0, "%.0f");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(w);
-        ImGui::InputDouble("dB max", &sg.db[1], 0, 0, "%.0f");
+        ImGui::InputDouble(sg.normalize ? "dB max" : "dB max", &r[1], 0, 0, "%.0f");
     }
     ImGui::SameLine(0, 20);
     ImGui::TextUnformatted("Frequency limits (0 = automatic):");
@@ -327,15 +333,20 @@ void App::draw_specgram(const char* id, float height, SgState& sg) {
     auto res = specgrams_for(rows, wf, sg);
     const ImPlotColormap cmap = kCmaps[std::max(0, std::min(5, sg.cmap))];
 
-    // Colour range: automatic = from the lowest typical to the highest typical power of all rows.
-    double dbmin = sg.db[0], dbmax = sg.db[1];
+    // Colour range. Normally in dB of power. When normalizing, every trace is shifted so that its own
+    // peak is 0 dB, and the range is dB below that peak.
+    std::vector<double> shift(res.size(), 0.0);
+    if (sg.normalize)
+        for (size_t r = 0; r < res.size(); r++)
+            if (res[r] && res[r]->w > 0) shift[r] = -res[r]->p_max;
+    double dbmin = sg.normalize ? sg.db_rel[0] : sg.db[0], dbmax = sg.normalize ? sg.db_rel[1] : sg.db[1];
     if (sg.auto_db) {
         dbmin = 1e300;
         dbmax = -1e300;
-        for (const auto& r : res)
-            if (r && r->w > 0) {
-                dbmin = std::min(dbmin, r->p_lo);
-                dbmax = std::max(dbmax, r->p_hi);
+        for (size_t r = 0; r < res.size(); r++)
+            if (res[r] && res[r]->w > 0) {
+                dbmin = std::min(dbmin, res[r]->p_lo + shift[r]);
+                dbmax = std::max(dbmax, (sg.normalize ? res[r]->p_max : res[r]->p_hi) + shift[r]);
             }
         if (dbmin > dbmax) {
             dbmin = -100;
@@ -343,10 +354,12 @@ void App::draw_specgram(const char* id, float height, SgState& sg) {
         }
         if (dbmax - dbmin < 1) dbmax = dbmin + 1;
     }
-    char sigbuf[96];
-    std::snprintf(sigbuf, sizeof sigbuf, "%d|%.3f|%.3f", sg.cmap, dbmin, dbmax);
-    for (const auto& r : res)
-        if (r && r->w > 0 && r->tex_sig != sigbuf) upload_picture(*r, cmap, dbmin, dbmax, sigbuf);
+    for (size_t r = 0; r < res.size(); r++) {
+        if (!res[r] || res[r]->w <= 0) continue;
+        char sigbuf[128];
+        std::snprintf(sigbuf, sizeof sigbuf, "%d|%.3f|%.3f|%.3f", sg.cmap, dbmin, dbmax, shift[r]);
+        if (res[r]->tex_sig != sigbuf) upload_picture(*res[r], cmap, dbmin, dbmax, shift[r], sigbuf);
+    }
 
     // Shared frequency axis: reset when the choice of traces or mode changes.
     {
@@ -447,7 +460,9 @@ void App::draw_specgram(const char* id, float height, SgState& sg) {
     ImGui::BeginChild("##sgbar", ImVec2(bar_w, avail_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
     ImGui::Dummy(ImVec2(0, 4));
     const std::string u = units_of(rows);
-    ImPlot::ColormapScale((u == "mixed units" ? std::string("dB (mixed units)") : "dB re 1 " + u + "\xc2\xb2/Hz").c_str(),
+    ImPlot::ColormapScale((sg.normalize ? std::string("dB below each trace's peak")
+                           : u == "mixed units" ? std::string("dB (mixed units)")
+                                                : "dB re 1 " + u + "\xc2\xb2/Hz").c_str(),
                           dbmin, dbmax,
                           ImVec2(bar_w - 8, std::max(60.0f, avail_h - axis_label_height() - 8)), "%.0f", 0, cmap);
     ImGui::EndChild();

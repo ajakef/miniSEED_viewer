@@ -29,6 +29,7 @@ App::App(const std::vector<std::string>& files) {
     load_config(cfg);
     load_filters(filters_);
     load_calib(calib_);
+    load_flips(flips_);
     proc_.detrend = cfg.detrend;
     proc_.reverse = cfg.reverse_polarity;
     mag_.overlay = cfg.overlay_magnify;
@@ -71,6 +72,7 @@ void App::save_all() {
     save_config(cfg);
     save_filters(filters_);
     save_calib(calib_);
+    save_flips(flips_);
 }
 
 void App::add_files(const std::vector<std::string>& files) {
@@ -80,6 +82,14 @@ void App::add_files(const std::vector<std::string>& files) {
     topts_.resize(traces_.size());
     calib_sel_.assign(traces_.size(), 0);
     last_used_.assign(traces_.size(), 0);
+    if (picks_path_.empty() && !files.empty()) {  // picks are kept next to the data, and read back if already there
+        size_t slash = files[0].find_last_of("/\\");
+        picks_path_ = (slash == std::string::npos ? std::string() : files[0].substr(0, slash + 1)) + "miniseed_viewer_picks.csv";
+        std::snprintf(picks_path_buf_, sizeof picks_path_buf_, "%s", picks_path_.c_str());
+        std::string err;
+        if (load_picks(picks_path_, picks_, err)) picks_msg_ = "Read " + std::to_string(picks_.size()) + " picks from " + picks_path_;
+        else picks_.clear();
+    }
     rebuild_order();
     reset_views();
     clear_caches();
@@ -201,6 +211,12 @@ std::string App::units_of(const std::vector<int>& rows) const {
     return u.empty() ? "counts" : u;
 }
 
+// Polarity: the global "reverse polarity" switch, combined with this channel's own flip.
+// The flip is separate from the per-trace filter settings, so it keeps working while filters change.
+bool App::effective_reverse(int ti) const {
+    return proc_.reverse != (flips_.count(traces_[ti].id) > 0);
+}
+
 bool App::busy() const {
     // Spectra wait 0.15 s after the view stops moving, then appear; keep redrawing until then.
     return loading_pending_ || (have_win_ && ImGui::GetTime() - view_changed_ < 0.4);
@@ -215,7 +231,7 @@ std::string App::proc_key(int ti, bool wf) const {
     const ProcOpts& o = opts_for(ti);
     char buf[256];
     std::snprintf(buf, sizeof buf, "%d|%.6f|%.6f|%d|%d|%d|%.9g|", ti, off(ti) + win_[0], off(ti) + win_[1], o.detrend,
-                  (int)o.reverse, (int)wf, calib_for(ti).scale);
+                  (int)effective_reverse(ti), (int)wf, calib_for(ti).scale);
     std::string k = buf;
     if (wf && o.filter >= 0 && o.filter < (int)filters_.size()) {
         const FilterSpec& f = filters_[o.filter];
@@ -245,7 +261,7 @@ std::shared_ptr<const Processed> App::compute_processed(int ti, bool wf) const {
             for (double& d : v) d *= scale;
         detrend(v, (Detrend)o.detrend);
         if (f) apply_filter(*f, 1.0 / raw.dt, v);
-        if (o.reverse)
+        if (effective_reverse(ti))
             for (double& d : v) d = -d;
         Segment s;
         s.t0 = raw.t0;
@@ -547,6 +563,7 @@ void App::frame() {
         }
         ImGui::EndTabBar();
     }
+    draw_picks_window();
     goto_tab_ = -1;
 }
 
@@ -667,13 +684,19 @@ void App::trace_label(int ti, bool checkbox, bool settings_button, const char* l
         TraceOpts& to = topts_[ti];
         std::string lbl = std::string(to.custom ? "custom*" : "settings") + "##s";
         if (ImGui::SmallButton(lbl.c_str())) ImGui::OpenPopup("proc");
+        ImGui::SameLine(0, 10);
+        bool flipped = flips_.count(tr.id) > 0;
+        if (ImGui::Checkbox("flip polarity##flip", &flipped)) {
+            if (flipped) flips_.insert(tr.id);
+            else flips_.erase(tr.id);
+            save_flips(flips_);
+        }
         if (ImGui::BeginPopup("proc")) {
             ImGui::TextUnformatted(tr.id.c_str());
             ImGui::Checkbox("Use different settings for this trace", &to.custom);
             if (to.custom) {
                 combo_filter("filter", to.o.filter);
                 combo_detrend("detrend", to.o.detrend);
-                ImGui::Checkbox("reverse polarity", &to.o.reverse);
                 if (ImGui::Button("Copy the global settings here")) to.o = proc_;
             }
             ImGui::EndPopup();

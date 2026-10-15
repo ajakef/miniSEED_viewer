@@ -9,6 +9,7 @@
 
 #include "../src/data.h"
 #include "../src/dsp.h"
+#include "../src/picks.h"
 #include "../src/stats.h"
 
 using namespace msv;
@@ -122,6 +123,17 @@ int main(int argc, char** argv) {
             write_vec(out + "/ms_rms.bin", ms.rms);
             write_vec(out + "/ms_skew.bin", ms.skew);
             write_vec(out + "/ms_kurt.bin", ms.kurt);
+        }
+        {   // picks file
+            std::vector<Pick> picks = {{1791597933.25, ".10024..HDF", "P"}, {1791590400.0, "XX.STA.00.BHZ", "a,b"},
+                                       {1791600000.123456, "XX.STA.00.BHZ", "S"}};
+            std::string err;
+            save_picks(out + "/picks.csv", picks, err);
+            std::vector<Pick> back;
+            load_picks(out + "/picks.csv", back, err);
+            printf("picks round trip: %zu read back, first %s\n", back.size(), format_iso(back[0].t).c_str());
+            double tt = 0;
+            printf("parse_iso ok=%d t=%.6f\n", (int)parse_iso("2026-10-10T01:25:33.250Z", tt), tt);
         }
         printf("time fmt: %s | %s\n", format_time(1791590126.51).c_str(), format_time(0.9996, 3).c_str());
         return 0;

@@ -243,6 +243,23 @@ void App::magnify_toolbar(MagState& ms) {
         ImGui::SameLine();
         ImGui::TextDisabled("(not shown in overlay mode)");
     }
+
+    // Event picks (marks on a channel, saved in a text file).
+    ImGui::BeginDisabled(ms.overlay);
+    ImGui::Checkbox("Pick mode", &ms.pick_mode);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
+    ImGui::InputText("label", pick_label_, sizeof pick_label_);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Picks list...")) show_picks_ = true;
+    ImGui::SameLine();
+    if (ms.overlay)
+        ImGui::TextDisabled("%d picks (picking is not available in overlay mode)", (int)picks_.size());
+    else if (ms.pick_mode)
+        ImGui::Text("%d picks. Click on a plot to add a pick; click on a pick line to remove it.", (int)picks_.size());
+    else
+        ImGui::Text("%d picks", (int)picks_.size());
     ImGui::PopID();
 }
 
@@ -306,6 +323,15 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
         notes[r] = buf;
         if (!P->warning.empty()) notes[r] += "\n" + P->warning;
     }
+    if (ms.global_scale && ms.overlay) {  // one common range for everything on the single axis
+        double lo = 1e300, hi = -1e300;
+        for (size_t r = 0; r < rows.size(); r++) {
+            lo = std::min(lo, ylo[r]);
+            hi = std::max(hi, yhi[r]);
+        }
+        std::fill(ylo.begin(), ylo.end(), lo);
+        std::fill(yhi.begin(), yhi.end(), hi);
+    }
     if (ms.global_scale && !ms.overlay) {
         // Traces share a scale only when they have the same units.
         std::map<std::string, std::pair<double, double>> common;
@@ -343,8 +369,9 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
 
     bool clicked = false;
     double click_x = 0;
-    auto mark_and_click = [&]() {
-        if (pick_state_ == 1) {
+    // ti: the channel of the plot being drawn (-1 when traces are overlaid).
+    auto mark_and_click = [&](int ti) {
+        if (pick_state_ == 1 && !(ms.pick_mode && ti >= 0)) {
             ImPlotSpec mark;
             mark.LineColor = mark_color();
             mark.LineWeight = 1.5f;
@@ -354,9 +381,50 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
         if (ImPlot::IsPlotHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
             ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
             if (d.x == 0 && d.y == 0) {
-                clicked = true;
-                click_x = ImPlot::GetPlotMousePos().x;
+                if (ms.pick_mode && ti >= 0) {
+                    // A click close to an existing pick removes it; any other click adds a pick.
+                    const std::string& id = traces_[ti].id;
+                    int best = -1;
+                    float best_d = 7.0f;
+                    for (size_t i = 0; i < picks_.size(); i++) {
+                        if (picks_[i].id != id) continue;
+                        float px = ImPlot::PlotToPixels(picks_[i].t - off(ti), 0.0).x;
+                        float dist = std::fabs(px - ImGui::GetIO().MousePos.x);
+                        if (dist < best_d) {
+                            best_d = dist;
+                            best = (int)i;
+                        }
+                    }
+                    if (best >= 0) {
+                        picks_.erase(picks_.begin() + best);
+                    } else {
+                        Pick p;
+                        p.t = ImPlot::GetPlotMousePos().x + off(ti);
+                        p.id = id;
+                        p.label = *pick_label_ ? pick_label_ : "pick";
+                        picks_.push_back(p);
+                    }
+                    picks_changed();
+                } else {
+                    clicked = true;
+                    click_x = ImPlot::GetPlotMousePos().x;
+                }
             }
+        }
+    };
+    // Lines (and their labels) for the picks made on this channel.
+    auto draw_picks = [&](int ti) {
+        for (const Pick& p : picks_) {
+            if (p.id != traces_[ti].id) continue;
+            double x = p.t - off(ti);
+            ImPlotSpec ps;
+            ps.LineColor = mark_color();
+            ps.LineWeight = 1.2f;
+            ps.Flags = ImPlotItemFlags_NoLegend;
+            ImPlot::PlotInfLines("##pick", &x, 1, ps);
+            ImPlotSpec ts;
+            ts.Flags = ImPlotItemFlags_NoLegend;
+            ImPlot::PlotText(p.label.c_str(), x, ImPlot::GetPlotLimits().Y.Max, ImVec2(4, 7), ts);
         }
     };
     const ImPlotFlags pflags =
@@ -381,18 +449,34 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
         }
         ImGui::EndChild();
         ImGui::SameLine(0, 0);
-        const std::string units = units_of(rows);
+        // "All traces together": true values on one axis. "Each trace": every trace is scaled to
+        // fill the axis by itself (so that traces of different size can be compared).
+        const std::string ylabel = ms.global_scale ? units_of(rows) : std::string("each trace scaled to fit");
+        double axis_lo = -1, axis_hi = 1;
+        if (ms.global_scale) {
+            axis_lo = ylo.empty() ? -1 : ylo[0];  // all rows share one range in this mode
+            axis_hi = yhi.empty() ? 1 : yhi[0];
+        }
         if (ImPlot::BeginPlot("##overlay", ImVec2(-1, row_h + axis_label_height()), pflags)) {
             setup_x(true);
-            ImPlot::SetupAxis(ImAxis_Y1, units.c_str(), ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_NoHighlight);
+            ImPlot::SetupAxis(ImAxis_Y1, ylabel.c_str(), ImPlotAxisFlags_NoHighlight | ImPlotAxisFlags_Lock);
+            ImPlot::SetupAxisLimits(ImAxis_Y1, axis_lo, axis_hi, ImPlotCond_Always);
             for (size_t r = 0; r < rows.size(); r++) {
                 ImPlotSpec spec;
                 spec.LineColor = trace_color(rows[r]);
                 spec.Flags = ImPlotItemFlags_NoLegend;
-                for (const Series& s : data[r])
-                    ImPlot::PlotLine("##l", s.x.data(), s.y.data(), (int)s.x.size(), spec);
+                const double mid = 0.5 * (ylo[r] + yhi[r]), half = 0.5 * (yhi[r] - ylo[r]);
+                for (const Series& s : data[r]) {
+                    if (ms.global_scale) {
+                        ImPlot::PlotLine("##l", s.x.data(), s.y.data(), (int)s.x.size(), spec);
+                    } else {
+                        std::vector<double> y(s.y.size());
+                        for (size_t i = 0; i < y.size(); i++) y[i] = (s.y[i] - mid) / half;
+                        ImPlot::PlotLine("##l", s.x.data(), y.data(), (int)y.size(), spec);
+                    }
+                }
             }
-            mark_and_click();
+            mark_and_click(-1);
             ImPlot::EndPlot();
         }
     } else {
@@ -465,7 +549,7 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
                         ImPlot::PlotLine("##l", xs.data(), s.y.data(), (int)xs.size(), spec);
                     }
                 }
-                mark_and_click();
+                mark_and_click(ti);
                 ImPlot::EndPlot();
             }
             ImGui::PopID();
@@ -490,7 +574,8 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
                 spec.Flags = ImPlotItemFlags_NoLegend;
                 for (const Series& s : data[r])
                     ImPlot::PlotLine("##l", s.x.data(), s.y.data(), (int)s.x.size(), spec);
-                mark_and_click();
+                draw_picks(ti);
+                mark_and_click(ti);
                 ImPlot::EndPlot();
             }
             const bool final_row = (r + 1 == rows.size());
@@ -508,6 +593,78 @@ void App::draw_magnify(const char* id, float height, MagState& ms) {
     ImGui::PopStyleVar();
     ImGui::EndChild();
     if (clicked) mag_click(click_x);
+}
+
+// ---------------------------------------------------------------------------
+// Event picks
+
+// Called after every change to the list: keeps it in time order and saves it if asked to.
+void App::picks_changed() {
+    std::sort(picks_.begin(), picks_.end(), [](const Pick& a, const Pick& b) { return a.t < b.t; });
+    if (picks_autosave_ && !picks_path_.empty()) {
+        std::string err;
+        picks_msg_ = save_picks(picks_path_, picks_, err) ? "Saved " + std::to_string(picks_.size()) + " picks to " + picks_path_ : err;
+    }
+}
+
+void App::draw_picks_window() {
+    if (!show_picks_) return;
+    const float fh = ImGui::GetFontSize();
+    ImGui::SetNextWindowSize(ImVec2(fh * 46, fh * 24), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Event picks", &show_picks_)) {
+        ImGui::SetNextItemWidth(fh * 32);
+        if (ImGui::InputText("file", picks_path_buf_, sizeof picks_path_buf_)) picks_path_ = picks_path_buf_;
+        ImGui::SameLine();
+        if (ImGui::Button("Save now") && !picks_path_.empty()) {
+            std::string err;
+            picks_msg_ = save_picks(picks_path_, picks_, err) ? "Saved " + std::to_string(picks_.size()) + " picks" : err;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Load") && !picks_path_.empty()) {
+            std::string err;
+            if (load_picks(picks_path_, picks_, err)) picks_msg_ = "Read " + std::to_string(picks_.size()) + " picks" + (err.empty() ? "" : " (" + err + ")");
+            else picks_msg_ = err;
+        }
+        ImGui::Checkbox("Save automatically after every change", &picks_autosave_);
+        if (!picks_msg_.empty()) ImGui::TextDisabled("%s", picks_msg_.c_str());
+        ImGui::TextWrapped(
+            "Times are UTC, one pick per line: time_utc,channel,label. In Python: "
+            "pandas.read_csv(path, comment=\"#\", parse_dates=[\"time_utc\"])");
+        ImGui::Spacing();
+        int remove = -1;
+        if (ImGui::BeginTable("picks", 4, ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders,
+                              ImVec2(0, ImGui::GetContentRegionAvail().y - fh * 2.2f))) {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("time (UTC)", ImGuiTableColumnFlags_WidthFixed, fh * 15);
+            ImGui::TableSetupColumn("channel", ImGuiTableColumnFlags_WidthFixed, fh * 11);
+            ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, fh * 4);
+            ImGui::TableHeadersRow();
+            for (size_t i = 0; i < picks_.size(); i++) {
+                ImGui::PushID((int)i);
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(format_iso(picks_[i].t).c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(picks_[i].id.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(picks_[i].label.c_str());
+                ImGui::TableNextColumn();
+                if (ImGui::SmallButton("remove")) remove = (int)i;
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        if (remove >= 0) {
+            picks_.erase(picks_.begin() + remove);
+            picks_changed();
+        }
+        if (ImGui::Button("Remove all picks")) {
+            picks_.clear();
+            picks_changed();
+        }
+    }
+    ImGui::End();
 }
 
 // ---------------------------------------------------------------------------
