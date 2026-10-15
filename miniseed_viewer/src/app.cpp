@@ -3,10 +3,17 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 
 #include "imgui.h"
 #include "implot.h"
 #include "parallel.h"
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 #include "stats.h"
 
 namespace msv {
@@ -82,9 +89,21 @@ void App::add_files(const std::vector<std::string>& files) {
     topts_.resize(traces_.size());
     calib_sel_.assign(traces_.size(), 0);
     last_used_.assign(traces_.size(), 0);
-    if (picks_path_.empty() && !files.empty()) {  // picks are kept next to the data, and read back if already there
-        size_t slash = files[0].find_last_of("/\\");
-        picks_path_ = (slash == std::string::npos ? std::string() : files[0].substr(0, slash + 1)) + "miniseed_viewer_picks.csv";
+    if (picks_path_.empty() && !files.empty()) {  // picks go in the folder the program was started from, and are read back if already there
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        fs::path dir = fs::current_path(ec);
+#if defined(_WIN32)
+        const bool writable = !ec && _access(dir.string().c_str(), 2) == 0;
+#else
+        const bool writable = !ec && access(dir.c_str(), W_OK) == 0;
+#endif
+        if (!writable) {  // e.g. an app started by double-click on a Mac starts in "/": use the home folder instead
+            const char* home = std::getenv("HOME");
+            if (!home) home = std::getenv("USERPROFILE");
+            dir = home ? fs::path(home) : fs::path(".");
+        }
+        picks_path_ = (dir / "miniseed_viewer_picks.csv").string();
         std::snprintf(picks_path_buf_, sizeof picks_path_buf_, "%s", picks_path_.c_str());
         std::string err;
         if (load_picks(picks_path_, picks_, err)) picks_msg_ = "Read " + std::to_string(picks_.size()) + " picks from " + picks_path_;
