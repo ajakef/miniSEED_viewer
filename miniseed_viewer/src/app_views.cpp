@@ -79,6 +79,7 @@ void App::filter_editor() {
                 else if (f > d) f--;
             };
             fix(proc_.filter);
+            fix(an_.filter);
             for (TraceOpts& to : topts_) fix(to.o.filter);
             draft_src_ = -2;
             save_filters(filters_);
@@ -143,6 +144,7 @@ void App::calib_editor() {
         ImGui::TableHeadersRow();
         for (int k = 0; k < (int)order_.size(); k++) {
             int ti = order_[k];
+            if (traces_[ti].derived) continue;  // results of analyses are already in physical units
             ImGui::PushID(ti);
             ImGui::TableNextRow();
             ImGui::TableNextColumn();

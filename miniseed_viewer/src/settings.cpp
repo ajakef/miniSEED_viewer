@@ -291,6 +291,7 @@ std::vector<int> sort_order(const std::vector<Trace>& traces, const std::vector<
     std::stable_sort(idx.begin(), idx.end(), [&](int ia, int ib) {
         const Trace& a = traces[ia];
         const Trace& b = traces[ib];
+        if (a.derived != b.derived) return b.derived;  // results of analyses go last
         for (const SortItem& s : order) {
             if (!s.use) continue;
             int c = 0;  // <0: a first

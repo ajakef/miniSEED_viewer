@@ -137,6 +137,8 @@ void App::clear_caches() {
     rms_cache_.clear();
     stats_cache_.clear();
     stats_stale_.clear();
+    sg_cache_.clear();
+    sg_stale_.clear();
 }
 
 double App::off(int ti) const { return cfg.relative_time ? traces_[ti].t_min : 0.0; }
@@ -216,6 +218,10 @@ bool App::combo_pow2(const char* label, int& v, int lo, int hi) {
 
 const Calib& App::calib_for(int ti) const {
     static const Calib none;
+    if (traces_[ti].derived) {
+        auto d = derived_calib_.find(traces_[ti].id);
+        return d == derived_calib_.end() ? none : d->second;
+    }
     auto it = calib_.find(traces_[ti].id);
     return it == calib_.end() ? none : it->second;
 }
@@ -501,7 +507,7 @@ bool App::ensure_page_loaded() {
     int64_t samples = 0;
     for (int ti : page_traces(false)) {
         last_used_[ti] = frame_no_;
-        if (!traces_[ti].loaded) {
+        if (!traces_[ti].loaded && !traces_[ti].derived) {
             need.push_back(&traces_[ti]);
             samples += traces_[ti].nsamples;
         }
@@ -522,7 +528,7 @@ bool App::ensure_page_loaded() {
     const size_t keep = 2 * (size_t)std::max(1, cfg.n_per_screen);
     std::vector<int> loaded;
     for (size_t i = 0; i < traces_.size(); i++)
-        if (traces_[i].loaded) loaded.push_back((int)i);
+        if (traces_[i].loaded && !traces_[i].derived) loaded.push_back((int)i);
     if (loaded.size() > keep) {
         std::sort(loaded.begin(), loaded.end(), [&](int a, int b) { return last_used_[a] < last_used_[b]; });
         for (size_t k = 0; k + keep < loaded.size(); k++)
@@ -558,6 +564,10 @@ void App::frame() {
         auto flag = [&](int i) { return goto_tab_ == i ? ImGuiTabItemFlags_SetSelected : 0; };
         if (ImGui::BeginTabItem("Main", nullptr, flag(0))) {
             draw_main();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Analyses", nullptr, flag(5))) {
+            draw_analyses();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Magnify", nullptr, flag(1))) {

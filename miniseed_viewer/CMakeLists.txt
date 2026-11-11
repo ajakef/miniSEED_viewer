@@ -23,7 +23,7 @@ target_include_directories(mseed PUBLIC ${TP}/libmseed)
 target_compile_options(mseed PRIVATE -w)
 
 # --- the part of the program that has no graphics ---
-add_library(core STATIC src/data.cpp src/dsp.cpp src/stats.cpp src/picks.cpp src/settings.cpp)
+add_library(core STATIC src/data.cpp src/dsp.cpp src/stats.cpp src/picks.cpp src/settings.cpp src/analysis.cpp)
 target_include_directories(core PUBLIC ${TP}/libmseed ${TP}/pocketfft)
 target_link_libraries(core PUBLIC mseed Threads::Threads)
 if(NOT MSVC)
@@ -51,7 +51,7 @@ target_include_directories(imgui PUBLIC ${TP}/imgui ${TP}/implot)
 target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
 target_compile_options(imgui PRIVATE -w)
 
-add_executable(miniseed_viewer src/main.cpp src/app.cpp src/app_views.cpp src/app_specgram.cpp)
+add_executable(miniseed_viewer src/main.cpp src/app.cpp src/app_views.cpp src/app_specgram.cpp src/app_analyses.cpp)
 target_link_libraries(miniseed_viewer core imgui Threads::Threads)
 target_compile_definitions(miniseed_viewer PRIVATE MSV_VERSION="${MSV_VERSION_STRING}")
 if(APPLE)

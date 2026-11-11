@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "analysis.h"
 #include "data.h"
 #include "imgui.h"
 #include "dsp.h"
@@ -17,6 +18,10 @@ namespace msv {
 
 // Extra height the bottom plot of a stack needs for its axis labels.
 float axis_label_height();
+
+struct SgData;
+// Makes (or remakes) the OpenGL picture of a SgData whose values are mapped from [lo, hi] onto a colour map.
+void make_picture(SgData& d, int implot_colormap, double lo, double hi, const std::string& sig);
 
 // How traces are cleaned up before plotting in the magnify and spectra tabs.
 struct ProcOpts {
@@ -100,6 +105,42 @@ struct SgState {
     std::string last_sig;
 };
 
+// State of the Analyses tab.
+struct AnState {
+    int kind = 0;                 // 0 = difference, 1 = cross-correlation
+    std::string in1, in2;         // ids of the two chosen traces ("" = not chosen yet)
+    std::map<std::string, double> shifts;  // time shift in seconds, by trace id
+    bool use_view = true;         // cross-correlation: only the time interval shown in the trace plots
+    bool use_sel = false;         // only the time window selected on Main
+    double lag[2] = {-1, 1};      // cross-correlation: range of lags, seconds
+    bool normalize = true;
+    bool balance = false;         // difference: scale the traces against each other to minimize the difference
+    double balance_R = 1;
+    int filter = -1;              // saved filter used for plots, correlation and finding R (-1 = none)
+    int pick_state = 0;           // two-click zoom in the plots: 0 nothing, 1 first time chosen
+    double pick_first = 0;
+    std::string pc_key[2];        // filtered copies of the two traces for the plots (cache)
+    std::vector<Segment> pc_segs[2];
+    std::string rate_note;        // set when the traces had different sample rates
+    std::string message;          // result or error of the last run
+    bool message_is_error = false;
+    bool have_xc = false;
+    XcorrResult xc;
+    std::string xc_title;
+    bool xc_refit = false;
+    bool xc_normalized = true;
+    int serial = 0;               // numbers the derived traces
+    double cg_win = 60;           // correlogram: window length, seconds
+    int cg_overlap = 50;          // correlogram: overlap between windows, percent
+    bool have_cg = false;
+    bool cg_auto = true;          // correlogram colour range: fitted to the values (symmetric about 0)
+    double cg_lim = 1.0;          // the range (-cg_lim .. +cg_lim) when not automatic
+    std::shared_ptr<SgData> cg;   // the correlogram picture (columns = windows, rows = lags)
+    std::string cg_title;
+    double view[2] = {0, 1};      // time range shown in the two trace plots (display time)
+    std::string view_sig;         // what the view was last fitted to
+};
+
 class App {
 public:
     explicit App(const std::vector<std::string>& files);
@@ -168,6 +209,8 @@ private:
     MagState mag_, split_mag_;
     SpecState spec_, split_spec_;
     SgState sg_;
+    AnState an_;
+    std::map<std::string, Calib> derived_calib_;  // units of derived traces (not saved)
 
     std::map<std::string, std::shared_ptr<const Processed>> proc_cache_;
     std::map<std::string, std::shared_ptr<const SpecResult>> spec_cache_;
@@ -216,6 +259,16 @@ private:
     void draw_spectra(const char* id, float height, SpecState& ss);
     void draw_specgram(const char* id, float height, SgState& sg);
     void draw_split();
+    void draw_analyses();
+    void draw_analyses_body();
+    void draw_analysis_traces(float height);
+    void run_diff();
+    void run_xcorr();
+    void run_correlogram();
+    void remove_derived(int ti);
+    int find_trace(const std::string& id) const;
+    bool analysis_inputs(Pieces& p1, Pieces& p2, Pieces& f1, Pieces& f2, int& t1, int& t2);
+    const FilterSpec* analysis_filter() const;
     void magnify_toolbar(MagState& ms);
     void spectra_toolbar(SpecState& ss);
     void specgram_toolbar(SgState& sg);

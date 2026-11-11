@@ -77,6 +77,8 @@ struct Trace {
     double v_min = 0, v_max = 0;  // smallest and largest sample (known once loaded)
     double rate = 0;              // samples per second (first segment)
     bool on = true;               // shown in the plots
+    bool derived = false;         // made by an analysis: lives only in memory, has no file
+    std::string note;             // for derived traces: how it was made
 };
 
 struct LoadResult {

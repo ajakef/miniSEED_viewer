@@ -213,6 +213,10 @@ void upload_picture(SgData& d, ImPlotColormap cmap, double dbmin, double dbmax, 
 
 }  // namespace
 
+void make_picture(SgData& d, int implot_colormap, double lo, double hi, const std::string& sig) {
+    upload_picture(d, (ImPlotColormap)implot_colormap, lo, hi, 0.0, sig);
+}
+
 SgData::~SgData() {
     if (tex) {
         GLuint t = tex;
